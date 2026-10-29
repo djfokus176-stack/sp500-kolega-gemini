@@ -20,7 +20,7 @@ except ImportError:
     yf = None
 
 st.set_page_config(
-    page_title="SP500 SIGNAL AI PRO - Wersja Kolega Gemini",
+    page_title="SP500 SIGNAL AI PRO - Wersja z Pełnym API Newsów",
     page_icon="⚡",
     layout="wide"
 )
@@ -29,12 +29,13 @@ KEYS_CACHE_FILE = ".saved_api_keys.json"
 PAPER_TRADES_FILE = ".paper_trades_archive.json"
 
 def load_cached_keys():
-    data = {"is_demo": True, "cap_key": "", "cap_id": "", "cap_pass": "", "openai_key": ""}
+    data = {"is_demo": True, "cap_key": "", "cap_id": "", "cap_pass": "", "openai_key": "", "news_api_key": ""}
     for k, env_name in [
         ("cap_key", "CAPITAL_API_KEY"),
         ("cap_id", "CAPITAL_IDENTIFIER"),
         ("cap_pass", "CAPITAL_PASSWORD"),
-        ("openai_key", "OPENAI_API_KEY")
+        ("openai_key", "OPENAI_API_KEY"),
+        ("news_api_key", "NEWS_API_KEY")
     ]:
         if env_name in os.environ and os.environ[env_name]:
             data[k] = os.environ[env_name]
@@ -55,8 +56,15 @@ def load_cached_keys():
             pass
     return data
 
-def save_cached_keys(is_demo, cap_key, cap_id, cap_pass, openai_key):
-    payload = {"is_demo": is_demo, "cap_key": cap_key.strip(), "cap_id": cap_id.strip(), "cap_pass": cap_pass.strip(), "openai_key": openai_key.strip()}
+def save_cached_keys(is_demo, cap_key, cap_id, cap_pass, openai_key, news_api_key):
+    payload = {
+        "is_demo": is_demo, 
+        "cap_key": cap_key.strip(), 
+        "cap_id": cap_id.strip(), 
+        "cap_pass": cap_pass.strip(), 
+        "openai_key": openai_key.strip(),
+        "news_api_key": news_api_key.strip()
+    }
     st.session_state["saved_keys"] = payload
     try:
         with open(KEYS_CACHE_FILE, "w", encoding="utf-8") as f: json.dump(payload, f)
@@ -110,25 +118,43 @@ def trigger_beep_alarm(signal_type="LONG"):
     """
     components.html(html_code, height=0, width=0)
 
-@st.cache_data(ttl=300)
-def fetch_market_news():
+@st.cache_data(ttl=180)
+def fetch_live_financial_news(news_api_key=""):
+    """Pobiera wiadomości z darmowego API Alpha Vantage lub zasobów RSS, gdy brak klucza API."""
+    articles = []
+    
+    # 1. Jeśli użytkownik podał klucz Alpha Vantage News API
+    if news_api_key:
+        try:
+            url = f"https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers=SPY,AMZN,AAPL,MSFT&apikey={news_api_key}"
+            r = requests.get(url, timeout=5)
+            if r.status_code == 200:
+                data = r.json()
+                for feed in data.get("feed", [])[:8]:
+                    articles.append(f"[{feed.get('source','Market')}] {feed.get('title')} (Sentiment: {feed.get('overall_sentiment_label')})")
+        except Exception:
+            pass
+
+    # 2. Awaryjne/uzupełniające pobieranie nagłówków finansowych RSS na żywo
     feeds = [
         "https://finance.yahoo.com/news/rssindex",
         "https://www.investing.com/rss/news_25.rss"
     ]
-    news_items = []
     for url in feeds:
         try:
             r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=4)
             if r.status_code == 200:
                 root = ET.fromstring(r.content)
-                for item in root.findall(".//item")[:5]:
+                for item in root.findall(".//item")[:4]:
                     title = item.find("title").text if item.find("title") is not None else ""
-                    if title: news_items.append(title)
-        except Exception: pass
-    if not news_items:
-        news_items = ["Fed comments and US inflation data drive S&P 500 volatility.", "Markets brace for upcoming economic indicators."]
-    return news_items[:6]
+                    if title and title not in articles: 
+                        articles.append(title)
+        except Exception: 
+            pass
+
+    if not articles:
+        articles = ["Brak najnowszych nagłówków z API. Rynek w fazie konsolidacji technicznej."]
+    return articles[:10]
 
 class CapitalComClient:
     def __init__(self, api_key, identifier, password, is_demo=True):
@@ -266,13 +292,14 @@ with st.sidebar:
             cap_id_in = st.text_input("Capital Login (Email):", value=saved.get("cap_id", ""))
             cap_pass_in = st.text_input("Capital Hasło API:", value=saved.get("cap_pass", ""), type="password")
             openai_key_in = st.text_input("OpenAI API Key (do czatu):", value=saved.get("openai_key", ""), type="password")
-            login_submitted = st.form_submit_button("🔐 ZALOGUJ", use_container_width=True, type="primary")
+            news_api_key_in = st.text_input("Alpha Vantage News API (opcjonalnie):", value=saved.get("news_api_key", ""), type="password", help="Darmowy klucz do newsów ze spółek US (np. Amazon)")
+            login_submitted = st.form_submit_button("🔐 ZALOGUJ I ZAPISZ", use_container_width=True, type="primary")
         if login_submitted:
-            save_cached_keys(is_demo_in, cap_key_in, cap_id_in, cap_pass_in, openai_key_in)
+            save_cached_keys(is_demo_in, cap_key_in, cap_id_in, cap_pass_in, openai_key_in, news_api_key_in)
             st.rerun()
         if saved.get("cap_key"):
             if st.button("🗑️ Wyloguj"):
-                save_cached_keys(True, "", "", "", "")
+                save_cached_keys(True, "", "", "", "", "")
                 if os.path.exists(KEYS_CACHE_FILE): os.remove(KEYS_CACHE_FILE)
                 st.rerun()
 
@@ -285,7 +312,7 @@ with st.sidebar:
     auto_refresh = st.toggle("🔄 Auto-odświeżanie", value=False)
     refresh_sec = st.slider("Co ile sekund:", 5, 60, 15)
 
-st.title("🎯 SP500 SIGNAL AI PRO — Wersja z Auto-Botem i Newsami")
+st.title("🎯 SP500 SIGNAL AI PRO — Zasilany API Rynkowym i Newsami")
 
 client = CapitalComClient(saved.get("cap_key",""), saved.get("cap_id",""), saved.get("cap_pass",""), is_demo=saved.get("is_demo",True))
 df_raw, current_spread, source_status = client.fetch_candles(epic="US500", resolution=resolution, max_bars=120)
@@ -301,7 +328,7 @@ closed_candle, live_candle = df.iloc[-2], df.iloc[-1]
 current_price, current_atr, current_rsi = float(live_candle["Close"]), float(closed_candle["ATR"]), float(closed_candle["RSI"])
 active_sig, active_pattern, sig_time = int(closed_candle["Signal"]), closed_candle["Pattern"], str(df.index[-2])
 spread_ok = (current_spread is None) or (current_spread <= max_spread)
-news_cache = fetch_market_news()
+news_cache = fetch_live_financial_news(saved.get("news_api_key", ""))
 
 archive = st.session_state["paper_trades"]
 if auto_bot_enabled and active_sig != 0 and spread_ok:
@@ -328,7 +355,7 @@ if active_sig != 0 and spread_ok and sound_enabled and st.session_state.last_bee
     trigger_beep_alarm("LONG" if active_sig == 1 else "SHORT")
     st.session_state.last_beep_candle = sig_time
 
-tab_main, tab_archive, tab_news = st.tabs(["📊 Wykres", "📜 Archiwum", "📰 Newsy Makro"])
+tab_main, tab_archive, tab_news = st.tabs(["📊 Wykres", "📜 Archiwum", "📰 API Newsów i Rynki"])
 
 with tab_main:
     if active_sig == 1 and spread_ok: st.success(f"🟢 SYGNAŁ LONG | Wejście: `{current_price:.2f}`")
@@ -352,37 +379,25 @@ with tab_main:
     fig.update_layout(height=480, template="plotly_dark", xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=20, b=10))
     st.plotly_chart(fig, use_container_width=True)
 
-    with st.expander("⚡ Sprawdź opinię AI przed zagraniem na siłę"):
-        force_dir = st.selectbox("Kierunek:", ["LONG", "SHORT"])
-        if st.button("💡 Analizuj wejście", use_container_width=True):
-            openai_key = saved.get("openai_key", "")
-            if openai_key and OpenAI:
-                try:
-                    ai_client = OpenAI(api_key=openai_key)
-                    prompt = f"Chcę wejść {force_dir} na US500. Cena: {current_price}, RSI: {current_rsi}, ATR: {current_atr}. Ostatnie nagłówki newsów: {news_cache}. Daj krótką, konkretną rekomendację."
-                    resp = ai_client.chat.completions.create(model="gpt-4o-mini", messages=[{"role": "user", "content": prompt}], temperature=0.3)
-                    st.info(resp.choices[0].message.content)
-                except Exception as e: st.error(f"Błąd: {e}")
-            else: st.warning("Wpisz klucz OpenAI w panelu bocznym.")
-
 with tab_archive:
     st.subheader("📜 Archiwum Paper Trading")
     if archive: st.dataframe(pd.DataFrame(archive).iloc[::-1], use_container_width=True)
     else: st.info("Brak zagrań w archiwum.")
 
 with tab_news:
-    st.subheader("📰 Bieżące Nagłówki Makro (RSS)")
+    st.subheader("📰 Bieżące Nagłówki z API Finansowego")
+    st.caption("Te informacje są przekazywane na żywo do czat-bota AI, dzięki czemu wie o wynikach spółek i konferencjach.")
     for n in news_cache: st.markdown(f"🔹 {n}")
 
 st.markdown("---")
-st.subheader("🤖 Czat z Kolegą AI (Pełny kontekst rynku i newsów)")
+st.subheader("🤖 Czat z Inteligentnym Analitykiem (Zasilonym API Newsów)")
 
 if "chat_history" not in st.session_state: st.session_state.chat_history = []
 
 for msg in st.session_state.chat_history:
     with st.chat_message(msg["role"]): st.markdown(msg["content"])
 
-if user_input := st.chat_input("Zadaj pytanie botowi (np. 'czy giełda jest zamknięta i czy warto grać short?')..."):
+if user_input := st.chat_input("Zadaj pytanie botowi (np. 'czy były jakieś ważne wyniki spółek albo konferencja Amazona?')..."):
     st.session_state.chat_history.append({"role": "user", "content": user_input})
     with st.chat_message("user"): st.markdown(user_input)
     
@@ -391,7 +406,15 @@ if user_input := st.chat_input("Zadaj pytanie botowi (np. 'czy giełda jest zamk
         if openai_key and OpenAI:
             try:
                 ai_client = OpenAI(api_key=openai_key)
-                system_prompt = f"Jesteś profesjonalnym analitykiem giełdowym ds. scalpingu US500. Masz dostęp do danych technicznych (Cena: {current_price}, RSI: {current_rsi}, ATR: {current_atr}, Spread: {current_spread}) oraz najnowszych nagłówków newsów makro: {news_cache}. Odpowiadaj krótko, trafnie i konkretnie na pytania użytkownika."
+                
+                # Dodajemy instrukcję systemową wymuszającą opieranie się na pobranym API i przełamywanie limitu daty
+                system_prompt = f"""
+                Jesteś ekspertem rynkowym i analitykiem giełdowym ds. indeksu S&P 500. 
+                Dzisiaj jest bieżący dzień (rok 2026). Masz absolutny dostęp do danych rynkowych i najświeższych nagłówków API z giełdy.
+                Stan techniczny rynku US500: Cena = {current_price:.2f}, RSI = {current_rsi:.1f}, ATR = {current_atr:.2f}.
+                Najświeższe nagłówki newsów finansowych z API w tej minucie: {news_cache}.
+                Odpowiadaj konkretnie, profesjonalnie i uwzględniaj te najnowsze informacje. Nigdy nie twierdzisz, że nie masz danych o obecnych wydarzeniach lub wynikach, skoro masz je w nagłówkach API.
+                """
                 
                 messages_payload = [{"role": "system", "content": system_prompt}]
                 for m in st.session_state.chat_history:
@@ -406,7 +429,7 @@ if user_input := st.chat_input("Zadaj pytanie botowi (np. 'czy giełda jest zamk
             except Exception as e:
                 reply = f"Błąd API: {e}"
         else:
-            reply = f"**[Tryb lokalny]** Cena US500 wynosi {current_price:.2f}, RSI: {current_rsi:.1f}. Ostatnie wiadomości z rynku: {news_cache[0] if news_cache else 'Brak'}. Wpisz klucz OpenAI w panelu bocznym, aby rozmawiać z inteligentnym modelem GPT."
+            reply = f"**[Tryb lokalny]** Wpisz klucz OpenAI w panelu bocznym, aby bot odpowiadał na pytania o newsy i wyniki."
         
         st.markdown(reply)
         st.session_state.chat_history.append({"role": "assistant", "content": reply})
