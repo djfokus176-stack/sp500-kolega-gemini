@@ -20,7 +20,7 @@ except ImportError:
     yf = None
 
 st.set_page_config(
-    page_title="SP500 SIGNAL AI PRO - Wersja Kolega Gemini + Auto-Bot",
+    page_title="SP500 SIGNAL AI PRO - Wersja Kolega Gemini",
     page_icon="⚡",
     layout="wide"
 )
@@ -122,13 +122,13 @@ def fetch_market_news():
             r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=4)
             if r.status_code == 200:
                 root = ET.fromstring(r.content)
-                for item in root.findall(".//item")[:4]:
+                for item in root.findall(".//item")[:5]:
                     title = item.find("title").text if item.find("title") is not None else ""
                     if title: news_items.append(title)
         except Exception: pass
     if not news_items:
         news_items = ["Fed comments and US inflation data drive S&P 500 volatility.", "Markets brace for upcoming economic indicators."]
-    return news_items[:5]
+    return news_items[:6]
 
 class CapitalComClient:
     def __init__(self, api_key, identifier, password, is_demo=True):
@@ -376,23 +376,30 @@ with tab_news:
 
 st.markdown("---")
 st.subheader("🤖 Czat z Kolegą AI (Pełny kontekst rynku i newsów)")
+
 if "chat_history" not in st.session_state: st.session_state.chat_history = []
+
 for msg in st.session_state.chat_history:
     with st.chat_message(msg["role"]): st.markdown(msg["content"])
 
-user_input = st.chat_input("Zadaj pytanie botowi (np. 'czy giełda jest zamknięta i czy warto grać short?')...")
-if user_input:
+if user_input := st.chat_input("Zadaj pytanie botowi (np. 'czy giełda jest zamknięta i czy warto grać short?')..."):
     st.session_state.chat_history.append({"role": "user", "content": user_input})
     with st.chat_message("user"): st.markdown(user_input)
+    
     with st.chat_message("assistant"):
         openai_key = saved.get("openai_key", "")
         if openai_key and OpenAI:
             try:
                 ai_client = OpenAI(api_key=openai_key)
                 system_prompt = f"Jesteś profesjonalnym analitykiem giełdowym ds. scalpingu US500. Masz dostęp do danych technicznych (Cena: {current_price}, RSI: {current_rsi}, ATR: {current_atr}, Spread: {current_spread}) oraz najnowszych nagłówków newsów makro: {news_cache}. Odpowiadaj krótko, trafnie i konkretnie na pytania użytkownika."
+                
+                messages_payload = [{"role": "system", "content": system_prompt}]
+                for m in st.session_state.chat_history:
+                    messages_payload.append({"role": m["role"], "content": m["content"]})
+                
                 resp = ai_client.chat.completions.create(
                     model="gpt-4o-mini",
-                    messages=[{"role": "system", "content": system_prompt}, *st.session_state.chat_history[-6:]],
+                    messages=messages_payload,
                     temperature=0.3
                 )
                 reply = resp.choices[0].message.content
@@ -400,6 +407,7 @@ if user_input:
                 reply = f"Błąd API: {e}"
         else:
             reply = f"**[Tryb lokalny]** Cena US500 wynosi {current_price:.2f}, RSI: {current_rsi:.1f}. Ostatnie wiadomości z rynku: {news_cache[0] if news_cache else 'Brak'}. Wpisz klucz OpenAI w panelu bocznym, aby rozmawiać z inteligentnym modelem GPT."
+        
         st.markdown(reply)
         st.session_state.chat_history.append({"role": "assistant", "content": reply})
 
