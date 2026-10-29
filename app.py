@@ -20,7 +20,7 @@ except ImportError:
     yf = None
 
 st.set_page_config(
-    page_title="SP500 SIGNAL AI PRO — Fed & Macro Edition",
+    page_title="SP500 SIGNAL AI PRO — Master Edition (PL Time)",
     page_icon="⚡",
     layout="wide"
 )
@@ -118,10 +118,9 @@ def trigger_beep_alarm(signal_type="LONG"):
 
 @st.cache_data(ttl=120)
 def fetch_fed_and_macro_news():
-    """Pobiera najświeższe komunikaty o FED, stopach procentowych, inflacji i indeksach z globalnych feedów finansowych."""
     feeds = [
-        "https://www.investing.com/rss/news_14.rss",  # Central Banks / FED
-        "https://www.investing.com/rss/news_25.rss",  # S&P 500 / US Stocks
+        "https://www.investing.com/rss/news_14.rss",
+        "https://www.investing.com/rss/news_25.rss",
         "https://finance.yahoo.com/news/rssindex"
     ]
     macro_items = []
@@ -137,7 +136,7 @@ def fetch_fed_and_macro_news():
         except Exception:
             pass
     if not macro_items:
-        macro_items = ["Brak pilnych komunikatów z FED. Rynek skupiony na danych technicznych S&P 500."]
+        macro_items = ["Brak pilnych komunikatów z FED."]
     return macro_items[:10]
 
 class CapitalComClient:
@@ -187,8 +186,11 @@ class CapitalComClient:
                 bid_c = p["closePrice"]["bid"]
                 ask_c = p["closePrice"]["ask"]
                 last_spread = round(ask_c - bid_c, 2)
+                # Konwersja czasu z UTC na czas polski (+2 godziny)
+                t_utc = pd.to_datetime(p["snapshotTimeUTC"])
+                t_pl = t_utc + pd.Timedelta(hours=2)
                 rows.append({
-                    "Time": pd.to_datetime(p["snapshotTimeUTC"]),
+                    "Time": t_pl,
                     "Open": (p["openPrice"]["bid"] + p["openPrice"]["ask"]) / 2.0,
                     "High": (p["highPrice"]["bid"] + p["highPrice"]["ask"]) / 2.0,
                     "Low": (p["lowPrice"]["bid"] + p["lowPrice"]["ask"]) / 2.0,
@@ -208,6 +210,8 @@ def fetch_fallback_data(resolution="MINUTE"):
         df = yf.download("^GSPC", period="1d", interval=tf_map.get(resolution, "5m"), progress=False)
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         df.dropna(inplace=True)
+        # Korekta czasu dla trybu Yahoo
+        df.index = pd.to_datetime(df.index) + pd.Timedelta(hours=2)
         return df.tail(120), 0.4, "🟡 Tryb Demo (Yahoo)"
     except Exception as e: return pd.DataFrame(), 0.5, f"Błąd: {e}"
 
@@ -295,7 +299,7 @@ with st.sidebar:
     auto_refresh = st.toggle("🔄 Auto-odświeżanie", value=False)
     refresh_sec = st.slider("Co ile sekund:", 5, 60, 15)
 
-st.title("🎯 SP500 SIGNAL AI PRO — Fed & Macro Stream")
+st.title("🎯 SP500 SIGNAL AI PRO — Czas Polski (PL Time)")
 
 client = CapitalComClient(saved.get("cap_key",""), saved.get("cap_id",""), saved.get("cap_pass",""), is_demo=saved.get("is_demo",True))
 df_raw, current_spread, source_status = client.fetch_candles(epic="US500", resolution=resolution, max_bars=120)
