@@ -20,7 +20,7 @@ except ImportError:
     yf = None
 
 st.set_page_config(
-    page_title="SP500 SIGNAL AI PRO - Wersja z Pełnym API Newsów",
+    page_title="SP500 SIGNAL AI PRO — Fed & Macro Edition",
     page_icon="⚡",
     layout="wide"
 )
@@ -29,13 +29,12 @@ KEYS_CACHE_FILE = ".saved_api_keys.json"
 PAPER_TRADES_FILE = ".paper_trades_archive.json"
 
 def load_cached_keys():
-    data = {"is_demo": True, "cap_key": "", "cap_id": "", "cap_pass": "", "openai_key": "", "news_api_key": ""}
+    data = {"is_demo": True, "cap_key": "", "cap_id": "", "cap_pass": "", "openai_key": ""}
     for k, env_name in [
         ("cap_key", "CAPITAL_API_KEY"),
         ("cap_id", "CAPITAL_IDENTIFIER"),
         ("cap_pass", "CAPITAL_PASSWORD"),
-        ("openai_key", "OPENAI_API_KEY"),
-        ("news_api_key", "NEWS_API_KEY")
+        ("openai_key", "OPENAI_API_KEY")
     ]:
         if env_name in os.environ and os.environ[env_name]:
             data[k] = os.environ[env_name]
@@ -56,14 +55,13 @@ def load_cached_keys():
             pass
     return data
 
-def save_cached_keys(is_demo, cap_key, cap_id, cap_pass, openai_key, news_api_key):
+def save_cached_keys(is_demo, cap_key, cap_id, cap_pass, openai_key):
     payload = {
         "is_demo": is_demo, 
         "cap_key": cap_key.strip(), 
         "cap_id": cap_id.strip(), 
         "cap_pass": cap_pass.strip(), 
-        "openai_key": openai_key.strip(),
-        "news_api_key": news_api_key.strip()
+        "openai_key": openai_key.strip()
     }
     st.session_state["saved_keys"] = payload
     try:
@@ -118,43 +116,29 @@ def trigger_beep_alarm(signal_type="LONG"):
     """
     components.html(html_code, height=0, width=0)
 
-@st.cache_data(ttl=180)
-def fetch_live_financial_news(news_api_key=""):
-    """Pobiera wiadomości z darmowego API Alpha Vantage lub zasobów RSS, gdy brak klucza API."""
-    articles = []
-    
-    # 1. Jeśli użytkownik podał klucz Alpha Vantage News API
-    if news_api_key:
-        try:
-            url = f"https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers=SPY,AMZN,AAPL,MSFT&apikey={news_api_key}"
-            r = requests.get(url, timeout=5)
-            if r.status_code == 200:
-                data = r.json()
-                for feed in data.get("feed", [])[:8]:
-                    articles.append(f"[{feed.get('source','Market')}] {feed.get('title')} (Sentiment: {feed.get('overall_sentiment_label')})")
-        except Exception:
-            pass
-
-    # 2. Awaryjne/uzupełniające pobieranie nagłówków finansowych RSS na żywo
+@st.cache_data(ttl=120)
+def fetch_fed_and_macro_news():
+    """Pobiera najświeższe komunikaty o FED, stopach procentowych, inflacji i indeksach z globalnych feedów finansowych."""
     feeds = [
-        "https://finance.yahoo.com/news/rssindex",
-        "https://www.investing.com/rss/news_25.rss"
+        "https://www.investing.com/rss/news_14.rss",  # Central Banks / FED
+        "https://www.investing.com/rss/news_25.rss",  # S&P 500 / US Stocks
+        "https://finance.yahoo.com/news/rssindex"
     ]
+    macro_items = []
     for url in feeds:
         try:
             r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=4)
             if r.status_code == 200:
                 root = ET.fromstring(r.content)
-                for item in root.findall(".//item")[:4]:
+                for item in root.findall(".//item")[:5]:
                     title = item.find("title").text if item.find("title") is not None else ""
-                    if title and title not in articles: 
-                        articles.append(title)
-        except Exception: 
+                    if title and title not in macro_items:
+                        macro_items.append(title)
+        except Exception:
             pass
-
-    if not articles:
-        articles = ["Brak najnowszych nagłówków z API. Rynek w fazie konsolidacji technicznej."]
-    return articles[:10]
+    if not macro_items:
+        macro_items = ["Brak pilnych komunikatów z FED. Rynek skupiony na danych technicznych S&P 500."]
+    return macro_items[:10]
 
 class CapitalComClient:
     def __init__(self, api_key, identifier, password, is_demo=True):
@@ -284,7 +268,7 @@ def detect_scalping_signals(df_main, df_htf=None, sensitivity="Standard"):
 saved = st.session_state["saved_keys"]
 
 with st.sidebar:
-    st.title("⚡ Kolega Gemini PRO")
+    st.title("⚡ Master Edition PRO")
     with st.expander("🔑 Klucze API i Logowanie", expanded=not bool(saved.get("cap_key"))):
         with st.form("api_login_form"):
             is_demo_in = st.checkbox("Konto DEMO", value=saved.get("is_demo", True))
@@ -292,14 +276,13 @@ with st.sidebar:
             cap_id_in = st.text_input("Capital Login (Email):", value=saved.get("cap_id", ""))
             cap_pass_in = st.text_input("Capital Hasło API:", value=saved.get("cap_pass", ""), type="password")
             openai_key_in = st.text_input("OpenAI API Key (do czatu):", value=saved.get("openai_key", ""), type="password")
-            news_api_key_in = st.text_input("Alpha Vantage News API (opcjonalnie):", value=saved.get("news_api_key", ""), type="password", help="Darmowy klucz do newsów ze spółek US (np. Amazon)")
             login_submitted = st.form_submit_button("🔐 ZALOGUJ I ZAPISZ", use_container_width=True, type="primary")
         if login_submitted:
-            save_cached_keys(is_demo_in, cap_key_in, cap_id_in, cap_pass_in, openai_key_in, news_api_key_in)
+            save_cached_keys(is_demo_in, cap_key_in, cap_id_in, cap_pass_in, openai_key_in)
             st.rerun()
         if saved.get("cap_key"):
             if st.button("🗑️ Wyloguj"):
-                save_cached_keys(True, "", "", "", "", "")
+                save_cached_keys(True, "", "", "", "")
                 if os.path.exists(KEYS_CACHE_FILE): os.remove(KEYS_CACHE_FILE)
                 st.rerun()
 
@@ -312,7 +295,7 @@ with st.sidebar:
     auto_refresh = st.toggle("🔄 Auto-odświeżanie", value=False)
     refresh_sec = st.slider("Co ile sekund:", 5, 60, 15)
 
-st.title("🎯 SP500 SIGNAL AI PRO — Zasilany API Rynkowym i Newsami")
+st.title("🎯 SP500 SIGNAL AI PRO — Fed & Macro Stream")
 
 client = CapitalComClient(saved.get("cap_key",""), saved.get("cap_id",""), saved.get("cap_pass",""), is_demo=saved.get("is_demo",True))
 df_raw, current_spread, source_status = client.fetch_candles(epic="US500", resolution=resolution, max_bars=120)
@@ -328,7 +311,7 @@ closed_candle, live_candle = df.iloc[-2], df.iloc[-1]
 current_price, current_atr, current_rsi = float(live_candle["Close"]), float(closed_candle["ATR"]), float(closed_candle["RSI"])
 active_sig, active_pattern, sig_time = int(closed_candle["Signal"]), closed_candle["Pattern"], str(df.index[-2])
 spread_ok = (current_spread is None) or (current_spread <= max_spread)
-news_cache = fetch_live_financial_news(saved.get("news_api_key", ""))
+macro_news = fetch_fed_and_macro_news()
 
 archive = st.session_state["paper_trades"]
 if auto_bot_enabled and active_sig != 0 and spread_ok:
@@ -355,7 +338,7 @@ if active_sig != 0 and spread_ok and sound_enabled and st.session_state.last_bee
     trigger_beep_alarm("LONG" if active_sig == 1 else "SHORT")
     st.session_state.last_beep_candle = sig_time
 
-tab_main, tab_archive, tab_news = st.tabs(["📊 Wykres", "📜 Archiwum", "📰 API Newsów i Rynki"])
+tab_main, tab_archive, tab_news = st.tabs(["📊 Wykres & Price Action", "📜 Archiwum", "📰 Komunikaty FED & Makro"])
 
 with tab_main:
     if active_sig == 1 and spread_ok: st.success(f"🟢 SYGNAŁ LONG | Wejście: `{current_price:.2f}`")
@@ -385,19 +368,18 @@ with tab_archive:
     else: st.info("Brak zagrań w archiwum.")
 
 with tab_news:
-    st.subheader("📰 Bieżące Nagłówki z API Finansowego")
-    st.caption("Te informacje są przekazywane na żywo do czat-bota AI, dzięki czemu wie o wynikach spółek i konferencjach.")
-    for n in news_cache: st.markdown(f"🔹 {n}")
+    st.subheader("📰 Bieżące komunikaty FED, Banków Centralnych i Makro")
+    for n in macro_news: st.markdown(f"🔹 {n}")
 
 st.markdown("---")
-st.subheader("🤖 Czat z Inteligentnym Analitykiem (Zasilonym API Newsów)")
+st.subheader("🤖 Czat z Inteligentnym Analitykiem (FED & Price Action)")
 
 if "chat_history" not in st.session_state: st.session_state.chat_history = []
 
 for msg in st.session_state.chat_history:
     with st.chat_message(msg["role"]): st.markdown(msg["content"])
 
-if user_input := st.chat_input("Zadaj pytanie botowi (np. 'czy były jakieś ważne wyniki spółek albo konferencja Amazona?')..."):
+if user_input := st.chat_input("Zadaj pytanie botowi o stopy FED, inflację lub strukturę świec..."):
     st.session_state.chat_history.append({"role": "user", "content": user_input})
     with st.chat_message("user"): st.markdown(user_input)
     
@@ -407,13 +389,13 @@ if user_input := st.chat_input("Zadaj pytanie botowi (np. 'czy były jakieś wa�
             try:
                 ai_client = OpenAI(api_key=openai_key)
                 
-                # Dodajemy instrukcję systemową wymuszającą opieranie się na pobranym API i przełamywanie limitu daty
                 system_prompt = f"""
-                Jesteś ekspertem rynkowym i analitykiem giełdowym ds. indeksu S&P 500. 
-                Dzisiaj jest bieżący dzień (rok 2026). Masz absolutny dostęp do danych rynkowych i najświeższych nagłówków API z giełdy.
-                Stan techniczny rynku US500: Cena = {current_price:.2f}, RSI = {current_rsi:.1f}, ATR = {current_atr:.2f}.
-                Najświeższe nagłówki newsów finansowych z API w tej minucie: {news_cache}.
-                Odpowiadaj konkretnie, profesjonalnie i uwzględniaj te najnowsze informacje. Nigdy nie twierdzisz, że nie masz danych o obecnych wydarzeniach lub wynikach, skoro masz je w nagłówkach API.
+                Jesteś głównym makroekonomistą i traderem Price Action. Specjalizujesz się w wpływie decyzji FED, stóp procentowych, inflacji oraz danych z USA na indeks S&P 500 (US500).
+                Znasz się doskonale na analizie świec (korpusy, knoty, pęd EMA 9/21, RSI).
+                Rok bieżący to 2026. Masz pełną wiedzę i najświeższe komunikaty makroekonomiczne z rynków.
+                Aktualny stan rynku US500: Cena = {current_price:.2f}, RSI = {current_rsi:.1f}, ATR = {current_atr:.2f}.
+                Najświeższe nagłówki o FED i makro: {macro_news}.
+                Odpowiadaj krótko, treściwie, z naciskiem na to, jak dane makro i techniczne wpływają na najbliższy ruch ceny.
                 """
                 
                 messages_payload = [{"role": "system", "content": system_prompt}]
@@ -429,7 +411,7 @@ if user_input := st.chat_input("Zadaj pytanie botowi (np. 'czy były jakieś wa�
             except Exception as e:
                 reply = f"Błąd API: {e}"
         else:
-            reply = f"**[Tryb lokalny]** Wpisz klucz OpenAI w panelu bocznym, aby bot odpowiadał na pytania o newsy i wyniki."
+            reply = f"**[Tryb lokalny]** Wpisz klucz OpenAI w panelu bocznym, aby odblokować pełną analizę makro FED i Price Action."
         
         st.markdown(reply)
         st.session_state.chat_history.append({"role": "assistant", "content": reply})
