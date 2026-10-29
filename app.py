@@ -1,4 +1,5 @@
 import os
+import json
 import time
 import requests
 import streamlit as st
@@ -26,6 +27,65 @@ st.set_page_config(
     page_icon="⚡",
     layout="wide"
 )
+
+KEYS_CACHE_FILE = ".saved_api_keys.json"
+
+def load_cached_keys():
+    """Wczytuje zapisane klucze z pliku tymczasowego lub st.secrets, żeby nie znikały po F5."""
+    data = {
+        "is_demo": True,
+        "cap_key": "",
+        "cap_id": "",
+        "cap_pass": "",
+        "openai_key": ""
+    }
+    # 1. Próba z env / st.secrets
+    for k, env_name in [
+        ("cap_key", "CAPITAL_API_KEY"),
+        ("cap_id", "CAPITAL_IDENTIFIER"),
+        ("cap_pass", "CAPITAL_PASSWORD"),
+        ("openai_key", "OPENAI_API_KEY")
+    ]:
+        if env_name in os.environ and os.environ[env_name]:
+            data[k] = os.environ[env_name]
+        else:
+            try:
+                if env_name in st.secrets and st.secrets[env_name]:
+                    data[k] = st.secrets[env_name]
+            except Exception:
+                pass
+
+    # 2. Próba z zapisanego pliku po kliknięciu "ZALOGUJ I ZAPISZ"
+    if os.path.exists(KEYS_CACHE_FILE):
+        try:
+            with open(KEYS_CACHE_FILE, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+                for k in data:
+                    if saved.get(k) is not None and saved.get(k) != "":
+                        data[k] = saved[k]
+        except Exception:
+            pass
+    return data
+
+def save_cached_keys(is_demo, cap_key, cap_id, cap_pass, openai_key):
+    """Zapisuje klucze na dysku serwera oraz w session_state."""
+    payload = {
+        "is_demo": is_demo,
+        "cap_key": cap_key.strip(),
+        "cap_id": cap_id.strip(),
+        "cap_pass": cap_pass.strip(),
+        "openai_key": openai_key.strip()
+    }
+    st.session_state["saved_keys"] = payload
+    try:
+        with open(KEYS_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+    except Exception:
+        pass
+
+# Inicjalizacja kluczy w pamięci sesji
+if "saved_keys" not in st.session_state:
+    st.session_state["saved_keys"] = load_cached_keys()
 
 # ==========================================
 # MODUŁ DŹWIĘKOWY (PISZCZENIE W PRZEGLĄDARCE)
@@ -78,7 +138,7 @@ class CapitalComClient:
 
     def authenticate(self):
         if not self.api_key or not self.identifier or not self.password:
-            return False, "Brak danych logowania Capital.com"
+            return False, "Brak wpisanych kluczy Capital.com"
         url = f"{self.base_url}/api/v1/session"
         headers = {
             "X-CAP-API-KEY": self.api_key,
@@ -94,10 +154,10 @@ class CapitalComClient:
             if r.status_code == 200:
                 self.cst = r.headers.get("CST")
                 self.security_token = r.headers.get("X-SECURITY-TOKEN")
-                return True, "Połączono z Capital.com API"
-            return False, f"Błąd autoryzacji ({r.status_code}): {r.text}"
+                return True, "✅ Zalogowano do Capital.com API"
+            return False, f"❌ Błąd logowania ({r.status_code}): Sprawdź API Key, Email lub Hasło API"
         except Exception as e:
-            return False, f"Błąd sieci Capital.com: {e}"
+            return False, f"❌ Błąd sieci Capital.com: {e}"
 
     def fetch_candles(self, epic="US500", resolution="MINUTE", max_bars=120):
         if not self.cst or not self.security_token:
@@ -142,7 +202,7 @@ class CapitalComClient:
 
             df = pd.DataFrame(rows)
             df.set_index("Time", inplace=True)
-            return df, last_spread, "OK (Capital.com Live)"
+            return df, last_spread, "🟢 OK (Capital.com Live)"
         except Exception as e:
             return pd.DataFrame(), None, f"Wyjątek API: {e}"
 
@@ -159,7 +219,7 @@ def fetch_fallback_data(resolution="MINUTE"):
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
         df.dropna(inplace=True)
-        return df.tail(120), 0.4, "Tryb Demo (Yahoo Finance - wpisz klucze Capital.com w panelu)"
+        return df.tail(120), 0.4, "🟡 Tryb Demo (Yahoo Finance — zaloguj się do Capital.com w panelu bocznym)"
     except Exception as e:
         return pd.DataFrame(), 0.5, f"Błąd danych: {e}"
 
@@ -168,18 +228,12 @@ def fetch_fallback_data(resolution="MINUTE"):
 # SILNIK SCALPINGOWY: ŚWIECE + STRZAŁKI
 # ==========================================
 def detect_scalping_signals(df_main, df_htf=None, sensitivity="Standard"):
-    """
-    Analizuje każdą świecę, rozpoznaje formacje świecowe i stawia strzałki LONG / SHORT.
-    Strzałki na zamkniętych świecach NIE ZNIKAJĄ (brak repaintingu).
-    """
     df = df_main.copy()
 
-    # Szybkie średnie pod scalping
     df["EMA9"] = df["Close"].ewm(span=9, adjust=False).mean()
     df["EMA21"] = df["Close"].ewm(span=21, adjust=False).mean()
     df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
 
-    # RSI (14)
     delta = df["Close"].diff()
     gain = (delta.where(delta > 0, 0)).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
@@ -187,22 +241,19 @@ def detect_scalping_signals(df_main, df_htf=None, sensitivity="Standard"):
     df["RSI"] = 100 - (100 / (1 + rs))
     df["RSI"] = df["RSI"].fillna(50)
 
-    # ATR (14) w punktach S&P 500
     high_low = df["High"] - df["Low"]
     high_close = np.abs(df["High"] - df["Close"].shift())
     low_close = np.abs(df["Low"] - df["Close"].shift())
     tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
     df["ATR"] = tr.rolling(14).mean().bfill()
 
-    # Trend z wyższego interwału (np. M5 potwierdza M1)
     htf_bias = 0
     if df_htf is not None and len(df_htf) > 25:
         htf_ema9 = df_htf["Close"].ewm(span=9, adjust=False).mean().iloc[-1]
         htf_ema21 = df_htf["Close"].ewm(span=21, adjust=False).mean().iloc[-1]
         htf_bias = 1 if htf_ema9 >= htf_ema21 else -1
 
-    # Kolumny na strzałki i opisy formacji
-    df["Signal"] = 0          # 1 = LONG (Zielona strzałka), -1 = SHORT (Czerwona strzałka)
+    df["Signal"] = 0
     df["Pattern"] = ""
     df["ArrowPrice"] = np.nan
 
@@ -220,17 +271,14 @@ def detect_scalping_signals(df_main, df_htf=None, sensitivity="Standard"):
         upper_wick = h - max(o, c)
         lower_wick = min(o, c) - l
 
-        # 1. Formacje świecowe PRO-LONG
         bull_pinbar = (lower_wick >= body * wick_ratio) and (lower_wick >= rng * 0.45) and (c >= o or lower_wick > upper_wick * 2.5)
         bull_engulfing = (pc < po) and (c > o) and (c > po) and (o <= pc) and (body > abs(pc - po) * 0.8)
         bull_impulse = (c > o) and (body > atr * 0.85) and (c > ema9) and (po <= ema9)
 
-        # 2. Formacje świecowe PRO-SHORT
         bear_pinbar = (upper_wick >= body * wick_ratio) and (upper_wick >= rng * 0.45) and (c <= o or upper_wick > lower_wick * 2.5)
         bear_engulfing = (pc > po) and (c < o) and (c < po) and (o >= pc) and (body > abs(pc - po) * 0.8)
         bear_impulse = (c < o) and (body > atr * 0.85) and (c < ema9) and (po >= ema9)
 
-        # Filtry kierunku i potwierdzenia
         trend_up = (ema9 >= ema21) or (rsi < 38)
         trend_down = (ema9 <= ema21) or (rsi > 62)
 
@@ -238,7 +286,6 @@ def detect_scalping_signals(df_main, df_htf=None, sensitivity="Standard"):
             trend_up = trend_up and (htf_bias == 1)
             trend_down = trend_down and (htf_bias == -1)
 
-        # Przypisanie strzałki (blokada strzału świeca po świecy w tym samym kierunku)
         prev_sig = df["Signal"].iloc[i - 1]
 
         if (bull_pinbar or bull_engulfing or bull_impulse) and trend_up and rsi < 72 and prev_sig != 1:
@@ -265,23 +312,44 @@ def detect_scalping_signals(df_main, df_htf=None, sensitivity="Standard"):
 
 
 # ==========================================
-# PANEL BOCZNY: USTAWIENIA I KLUCZE
+# PANEL BOCZNY: USTAWIENIA I PRZYCISK LOGOWANIA
 # ==========================================
-def get_secret_or_env(key_name):
-    if key_name in os.environ:
-        return os.environ[key_name]
-    try:
-        if key_name in st.secrets:
-            return st.secrets[key_name]
-    except Exception:
-        pass
-    return ""
-
+saved = st.session_state["saved_keys"]
 
 with st.sidebar:
     st.title("⚡ Kolega Gemini PRO")
     st.caption("Scalping US500 • Strzałki • Alarm • Czat AI")
 
+    # SEKCJA LOGOWANIA Z PRZYCISKIEM NA SAMEJ GÓRZE LUB W EXPANDERZE
+    with st.expander("🔑 Klucze API i Logowanie", expanded=not bool(saved.get("cap_key"))):
+        with st.form("api_login_form", clear_on_submit=False):
+            is_demo_in = st.checkbox("Konto DEMO Capital.com", value=saved.get("is_demo", True))
+            cap_key_in = st.text_input("Capital API Key:", value=saved.get("cap_key", ""), type="password")
+            cap_id_in = st.text_input("Capital Login (Email):", value=saved.get("cap_id", ""))
+            cap_pass_in = st.text_input("Capital Hasło API:", value=saved.get("cap_pass", ""), type="password")
+            openai_key_in = st.text_input("OpenAI API Key (do czatu):", value=saved.get("openai_key", ""), type="password")
+
+            login_submitted = st.form_submit_button("🔐 ZALOGUJ I ZAPISZ KLUCZE", use_container_width=True, type="primary")
+
+        if login_submitted:
+            save_cached_keys(is_demo_in, cap_key_in, cap_id_in, cap_pass_in, openai_key_in)
+            saved = st.session_state["saved_keys"]
+            test_client = CapitalComClient(saved["cap_key"], saved["cap_id"], saved["cap_pass"], is_demo=saved["is_demo"])
+            ok, auth_msg = test_client.authenticate()
+            if ok:
+                st.success(auth_msg)
+            else:
+                st.error(auth_msg)
+
+        if saved.get("cap_key") and saved.get("cap_id"):
+            st.caption(f"📌 Zapisany login: `{saved.get('cap_id')}`")
+            if st.button("🗑️ Wyloguj / Wyczyść klucze", use_container_width=True):
+                save_cached_keys(True, "", "", "", "")
+                if os.path.exists(KEYS_CACHE_FILE):
+                    os.remove(KEYS_CACHE_FILE)
+                st.rerun()
+
+    st.markdown("---")
     st.subheader("1. Parametry Scalpingu")
     resolution = st.selectbox(
         "Główny interwał wykresu:",
@@ -305,28 +373,27 @@ with st.sidebar:
     auto_refresh = st.toggle("🔄 Auto-odświeżanie wykresu", value=False)
     refresh_sec = st.slider("Odświeżaj co (sekundy):", 5, 60, 15)
 
-    st.markdown("---")
-    with st.expander("🔑 Klucze API (Capital.com & OpenAI)", expanded=False):
-        is_demo = st.checkbox("Konto DEMO Capital.com", value=True)
-        cap_key = st.text_input("Capital API Key:", value=get_secret_or_env("CAPITAL_API_KEY"), type="password")
-        cap_id = st.text_input("Capital Login (Email):", value=get_secret_or_env("CAPITAL_IDENTIFIER"))
-        cap_pass = st.text_input("Capital Hasło API:", value=get_secret_or_env("CAPITAL_PASSWORD"), type="password")
-        openai_key = st.text_input("OpenAI API Key (do czatu):", value=get_secret_or_env("OPENAI_API_KEY"), type="password")
-
 
 # ==========================================
 # POBRANIE DANYCH I ANALIZA
 # ==========================================
 st.title("🎯 SP500 SIGNAL AI PRO — Wersja Kolega Gemini")
 
+cap_key = saved.get("cap_key", "")
+cap_id = saved.get("cap_id", "")
+cap_pass = saved.get("cap_pass", "")
+is_demo = saved.get("is_demo", True)
+openai_key = saved.get("openai_key", "")
+
 client = CapitalComClient(cap_key, cap_id, cap_pass, is_demo=is_demo)
 df_raw, current_spread, source_status = client.fetch_candles(epic="US500", resolution=resolution, max_bars=120)
 
-# Pobranie wyższego interwału (M5 dla M1, M15 dla M5) do potwierdzenia trendu
 htf_res = "MINUTE_5" if resolution == "MINUTE" else "MINUTE_15"
 df_htf, _, _ = client.fetch_candles(epic="US500", resolution=htf_res, max_bars=60)
 
 if df_raw.empty:
+    if cap_key or cap_id or cap_pass:
+        st.warning(f"⚠️ Problem z połączeniem Capital.com: **{source_status}**. Przełączono tymczasowo na wykres awaryjny.")
     df_raw, current_spread, source_status = fetch_fallback_data(resolution)
     df_htf, _, _ = fetch_fallback_data(htf_res)
 
@@ -336,14 +403,12 @@ if df_raw.empty or len(df_raw) < 25:
 
 df, htf_bias = detect_scalping_signals(df_raw, df_htf, sensitivity=sensitivity)
 
-# Ostatnia zamknięta świeca (-2) oraz bieżąca rysująca się (-1)
 closed_candle = df.iloc[-2]
 live_candle = df.iloc[-1]
 current_price = float(live_candle["Close"])
 current_atr = float(closed_candle["ATR"])
 current_rsi = float(closed_candle["RSI"])
 
-# Sprawdzamy sygnał na ostatniej zamkniętej świecy (-2) lub świeżo wybity na (-1)
 active_sig = int(closed_candle["Signal"])
 active_pattern = closed_candle["Pattern"]
 sig_time = str(df.index[-2])
@@ -353,7 +418,6 @@ if active_sig == 0 and int(live_candle["Signal"]) != 0:
     active_pattern = f"{live_candle['Pattern']} (Na żywo!)"
     sig_time = str(df.index[-1])
 
-# Blokada jeśli spread jest za wysoki
 spread_ok = (current_spread is None) or (current_spread <= max_spread)
 
 # ==========================================
@@ -400,7 +464,6 @@ else:
     else:
         st.info("⚪ **CZEKAJ** — Rynek bez wyraźnego układu świecowego.")
 
-# Karty informacyjne
 c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("Cena US500", f"{current_price:.2f}")
 c2.metric("Spread (Bid/Ask)", f"{current_spread:.2f} pkt" if current_spread else "Brak", delta="OK" if spread_ok else "ZA DUŻY!", delta_color="normal" if spread_ok else "inverse")
@@ -418,7 +481,6 @@ short_signals = df_plot[df_plot["Signal"] == -1]
 
 fig = go.Figure()
 
-# Świece
 fig.add_trace(go.Candlestick(
     x=df_plot.index,
     open=df_plot["Open"],
@@ -430,11 +492,9 @@ fig.add_trace(go.Candlestick(
     decreasing_line_color="#ff1744"
 ))
 
-# Średnie EMA 9 i EMA 21
 fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot["EMA9"], line=dict(color="#ffea00", width=1.3), name="EMA 9 (Szybka)"))
 fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot["EMA21"], line=dict(color="#2979ff", width=1.6), name="EMA 21 (Trend)"))
 
-# ZIELONE STRZAŁKI (LONG)
 if not long_signals.empty:
     fig.add_trace(go.Scatter(
         x=long_signals.index,
@@ -448,7 +508,6 @@ if not long_signals.empty:
         name="Sygnał LONG"
     ))
 
-# CZERWONE STRZAŁKI (SHORT)
 if not short_signals.empty:
     fig.add_trace(go.Scatter(
         x=short_signals.index,
@@ -542,7 +601,7 @@ if final_prompt:
                 f"- **Układ średnich i pędu:** {dir_advice} (EMA9 = `{closed_candle['EMA9']:.2f}`, EMA21 = `{closed_candle['EMA21']:.2f}`, RSI = `{current_rsi:.1f}`).\n"
                 f"- **Zachowanie ostatnich 5 świec:** {bull_candles}/5 świec wzrostowych, średni rozmach świecy wynosi `{avg_range:.2f}` pkt (ATR: `{current_atr:.2f}` pkt).\n"
                 f"- **Wskazówka:** {'Mamy aktywną strzałkę `' + active_pattern + '` — pilnuj ciasnego SL za knotem świecy!' if active_sig != 0 else 'Brak świeżej strzałki na zamknięciu ostatniej świecy — poczekaj na dojście ceny do EMA9 i wyraźny Pinbar lub Objęcie.'}\n\n"
-                f"*(Wklej klucz OpenAI w panelu bocznym, aby odblokować pełny czat GPT).* "
+                f"*(Wpisz klucz OpenAI w panelu bocznym i kliknij ZALOGUJ I ZAPISZ KLUCZE, aby odblokować pełny czat GPT).* "
             )
         st.markdown(reply)
         st.session_state.chat_history.append({"role": "assistant", "content": reply})
