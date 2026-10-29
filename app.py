@@ -19,9 +19,6 @@ try:
 except ImportError:
     yf = None
 
-# ==========================================
-# KONFIGURACJA STRONY STREAMLIT
-# ==========================================
 st.set_page_config(
     page_title="SP500 SIGNAL AI PRO - Wersja Kolega Gemini + Auto-Bot",
     page_icon="⚡",
@@ -53,53 +50,36 @@ def load_cached_keys():
             with open(KEYS_CACHE_FILE, "r", encoding="utf-8") as f:
                 saved = json.load(f)
                 for k in data:
-                    if saved.get(k):
-                        data[k] = saved[k]
+                    if saved.get(k): data[k] = saved[k]
         except Exception:
             pass
     return data
 
 def save_cached_keys(is_demo, cap_key, cap_id, cap_pass, openai_key):
-    payload = {
-        "is_demo": is_demo,
-        "cap_key": cap_key.strip(),
-        "cap_id": cap_id.strip(),
-        "cap_pass": cap_pass.strip(),
-        "openai_key": openai_key.strip()
-    }
+    payload = {"is_demo": is_demo, "cap_key": cap_key.strip(), "cap_id": cap_id.strip(), "cap_pass": cap_pass.strip(), "openai_key": openai_key.strip()}
     st.session_state["saved_keys"] = payload
     try:
-        with open(KEYS_CACHE_FILE, "w", encoding="utf-8") as f:
-            json.dump(payload, f)
-    except Exception:
-        pass
+        with open(KEYS_CACHE_FILE, "w", encoding="utf-8") as f: json.dump(payload, f)
+    except Exception: pass
 
 if "saved_keys" not in st.session_state:
     st.session_state["saved_keys"] = load_cached_keys()
 
-# Archiwum wirtualnych zagrań bota
 def load_paper_archive():
     if os.path.exists(PAPER_TRADES_FILE):
         try:
-            with open(PAPER_TRADES_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
+            with open(PAPER_TRADES_FILE, "r", encoding="utf-8") as f: return json.load(f)
+        except Exception: pass
     return []
 
 def save_paper_archive(trades):
     try:
-        with open(PAPER_TRADES_FILE, "w", encoding="utf-8") as f:
-            json.dump(trades, f, indent=2)
-    except Exception:
-        pass
+        with open(PAPER_TRADES_FILE, "w", encoding="utf-8") as f: json.dump(trades, f, indent=2)
+    except Exception: pass
 
 if "paper_trades" not in st.session_state:
     st.session_state["paper_trades"] = load_paper_archive()
 
-# ==========================================
-# MODUŁ DŹWIĘKOWY (PISZCZENIE W PRZEGLĄDARCE)
-# ==========================================
 def trigger_beep_alarm(signal_type="LONG"):
     freq1 = 880 if signal_type == "LONG" else 520
     freq2 = 1175 if signal_type == "LONG" else 390
@@ -130,15 +110,11 @@ def trigger_beep_alarm(signal_type="LONG"):
     """
     components.html(html_code, height=0, width=0)
 
-# ==========================================
-# POBIERANIE WIADOMOŚCI MAKRO (RSS NEWS)
-# ==========================================
 @st.cache_data(ttl=300)
 def fetch_market_news():
-    """Pobiera najnowsze nagłówki RSS o rynkach finansowych i S&P 500."""
     feeds = [
         "https://finance.yahoo.com/news/rssindex",
-        "https://www.investing.com/rss/news_25.rss"  # S&P 500 RSS
+        "https://www.investing.com/rss/news_25.rss"
     ]
     news_items = []
     for url in feeds:
@@ -146,23 +122,14 @@ def fetch_market_news():
             r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=4)
             if r.status_code == 200:
                 root = ET.fromstring(r.content)
-                for item in root.findall(".//item")[:5]:
+                for item in root.findall(".//item")[:4]:
                     title = item.find("title").text if item.find("title") is not None else ""
-                    pub_date = item.find("pubDate").text if item.find("pubDate") is not None else ""
-                    if title:
-                        news_items.append({"title": title, "date": pub_date})
-        except Exception:
-            pass
+                    if title: news_items.append(title)
+        except Exception: pass
     if not news_items:
-        news_items = [
-            {"title": "Fed comments and US inflation data drive S&P 500 volatility.", "date": "Live"},
-            {"title": "Markets brace for upcoming economic indicators on indices.", "date": "Live"}
-        ]
-    return news_items[:6]
+        news_items = ["Fed comments and US inflation data drive S&P 500 volatility.", "Markets brace for upcoming economic indicators."]
+    return news_items[:5]
 
-# ==========================================
-# KLIENT API CAPITAL.COM
-# ==========================================
 class CapitalComClient:
     def __init__(self, api_key, identifier, password, is_demo=True):
         self.base_url = "https://demo-api-capital.backend-capital.com" if is_demo else "https://api-capital.backend-capital.com"
@@ -174,7 +141,7 @@ class CapitalComClient:
 
     def authenticate(self):
         if not self.api_key or not self.identifier or not self.password:
-            return False, "Brak wpisanych kluczy Capital.com"
+            return False, "Brak kluczy"
         url = f"{self.base_url}/api/v1/session"
         headers = {"X-CAP-API-KEY": self.api_key, "Content-Type": "application/json"}
         payload = {"identifier": self.identifier, "password": self.password, "encryptedPassword": False}
@@ -183,16 +150,15 @@ class CapitalComClient:
             if r.status_code == 200:
                 self.cst = r.headers.get("CST")
                 self.security_token = r.headers.get("X-SECURITY-TOKEN")
-                return True, "✅ Zalogowano do Capital.com API"
+                return True, "✅ Zalogowano"
             return False, f"❌ Błąd logowania ({r.status_code})"
         except Exception as e:
-            return False, f"❌ Błąd sieci: {e}"
+            return False, f"❌ Błąd: {e}"
 
     def fetch_candles(self, epic="US500", resolution="MINUTE", max_bars=120):
         if not self.cst or not self.security_token:
             ok, msg = self.authenticate()
-            if not ok:
-                return pd.DataFrame(), None, msg
+            if not ok: return pd.DataFrame(), None, msg
 
         url = f"{self.base_url}/api/v1/prices/{epic}"
         headers = {"X-CAP-API-KEY": self.api_key, "CST": self.cst, "X-SECURITY-TOKEN": self.security_token}
@@ -200,13 +166,10 @@ class CapitalComClient:
 
         try:
             r = requests.get(url, headers=headers, params=params, timeout=8)
-            if r.status_code != 200:
-                return pd.DataFrame(), None, f"Błąd pobierania świec ({r.status_code})"
-
+            if r.status_code != 200: return pd.DataFrame(), None, f"Błąd {r.status_code}"
             data = r.json()
             prices = data.get("prices", [])
-            if not prices:
-                return pd.DataFrame(), None, "Pusta lista świec"
+            if not prices: return pd.DataFrame(), None, "Brak świec"
 
             rows = []
             last_spread = 0.0
@@ -220,41 +183,28 @@ class CapitalComClient:
                     "High": (p["highPrice"]["bid"] + p["highPrice"]["ask"]) / 2.0,
                     "Low": (p["lowPrice"]["bid"] + p["lowPrice"]["ask"]) / 2.0,
                     "Close": (bid_c + ask_c) / 2.0,
-                    "Volume": p.get("lastTradedVolume", 0),
-                    "Bid": bid_c,
-                    "Ask": ask_c
+                    "Volume": p.get("lastTradedVolume", 0)
                 })
-
             df = pd.DataFrame(rows)
             df.set_index("Time", inplace=True)
-            return df, last_spread, "🟢 OK (Capital.com Live)"
+            return df, last_spread, "🟢 OK (Live)"
         except Exception as e:
-            return pd.DataFrame(), None, f"Wyjątek API: {e}"
+            return pd.DataFrame(), None, f"Wyjątek: {e}"
 
 def fetch_fallback_data(resolution="MINUTE"):
-    if yf is None:
-        return pd.DataFrame(), 0.5, "Zainstaluj yfinance"
+    if yf is None: return pd.DataFrame(), 0.5, "Brak yfinance"
     tf_map = {"MINUTE": "1m", "MINUTE_5": "5m", "MINUTE_15": "15m"}
-    interval = tf_map.get(resolution, "5m")
-    period = "1d" if interval == "1m" else "5d"
     try:
-        df = yf.download("^GSPC", period=period, interval=interval, progress=False)
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
+        df = yf.download("^GSPC", period="1d", interval=tf_map.get(resolution, "5m"), progress=False)
+        if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         df.dropna(inplace=True)
-        return df.tail(120), 0.4, "🟡 Tryb Demo (Yahoo Finance)"
-    except Exception as e:
-        return pd.DataFrame(), 0.5, f"Błąd: {e}"
+        return df.tail(120), 0.4, "🟡 Tryb Demo (Yahoo)"
+    except Exception as e: return pd.DataFrame(), 0.5, f"Błąd: {e}"
 
-# ==========================================
-# SILNIK SCALPINGOWY + AUTOMATYCZNY BOT (PAPER TRADING)
-# ==========================================
 def detect_scalping_signals(df_main, df_htf=None, sensitivity="Standard"):
     df = df_main.copy()
     df["EMA9"] = df["Close"].ewm(span=9, adjust=False).mean()
     df["EMA21"] = df["Close"].ewm(span=21, adjust=False).mean()
-    df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
-
     delta = df["Close"].diff()
     gain = (delta.where(delta > 0, 0)).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
@@ -277,110 +227,68 @@ def detect_scalping_signals(df_main, df_htf=None, sensitivity="Standard"):
     df["Signal"] = 0
     df["Pattern"] = ""
     df["ArrowPrice"] = np.nan
-
     wick_ratio = 1.6 if sensitivity == "Wysoka (Więcej strzałek)" else 2.0
 
     for i in range(2, len(df)):
         o, h, l, c = df["Open"].iloc[i], df["High"].iloc[i], df["Low"].iloc[i], df["Close"].iloc[i]
-        po, ph, pl, pc = df["Open"].iloc[i - 1], df["High"].iloc[i - 1], df["Low"].iloc[i - 1], df["Close"].iloc[i - 1]
-        ema9, ema21 = df["EMA9"].iloc[i], df["EMA21"].iloc[i]
-        rsi = df["RSI"].iloc[i]
-        atr = max(df["ATR"].iloc[i], 0.5)
+        po, pc = df["Open"].iloc[i - 1], df["Close"].iloc[i - 1]
+        ema9, ema21, rsi, atr = df["EMA9"].iloc[i], df["EMA21"].iloc[i], df["RSI"].iloc[i], max(df["ATR"].iloc[i], 0.5)
+        body, rng = abs(c - o), max(h - l, 0.01)
+        upper_wick, lower_wick = h - max(o, c), min(o, c) - l
 
-        body = abs(c - o)
-        rng = max(h - l, 0.01)
-        upper_wick = h - max(o, c)
-        lower_wick = min(o, c) - l
+        bull_pinbar = (lower_wick >= body * wick_ratio) and (lower_wick >= rng * 0.45)
+        bull_engulfing = (pc < po) and (c > o) and (c > po)
+        bear_pinbar = (upper_wick >= body * wick_ratio) and (upper_wick >= rng * 0.45)
+        bear_engulfing = (pc > po) and (c < o) and (c < po)
 
-        bull_pinbar = (lower_wick >= body * wick_ratio) and (lower_wick >= rng * 0.45) and (c >= o or lower_wick > upper_wick * 2.5)
-        bull_engulfing = (pc < po) and (c > o) and (c > po) and (o <= pc) and (body > abs(pc - po) * 0.8)
-        bull_impulse = (c > o) and (body > atr * 0.85) and (c > ema9) and (po <= ema9)
-
-        bear_pinbar = (upper_wick >= body * wick_ratio) and (upper_wick >= rng * 0.45) and (c <= o or upper_wick > lower_wick * 2.5)
-        bear_engulfing = (pc > po) and (c < o) and (c < po) and (o >= pc) and (body > abs(pc - po) * 0.8)
-        bear_impulse = (c < o) and (body > atr * 0.85) and (c < ema9) and (po >= ema9)
-
-        trend_up = (ema9 >= ema21) or (rsi < 38)
-        trend_down = (ema9 <= ema21) or (rsi > 62)
-
-        if sensitivity == "Tylko Pewniaki (M1 + M5 zgodne)" and htf_bias != 0:
-            trend_up = trend_up and (htf_bias == 1)
-            trend_down = trend_down and (htf_bias == -1)
-
+        trend_up, trend_down = (ema9 >= ema21) or (rsi < 38), (ema9 <= ema21) or (rsi > 62)
         prev_sig = df["Signal"].iloc[i - 1]
 
-        if (bull_pinbar or bull_engulfing or bull_impulse) and trend_up and rsi < 72 and prev_sig != 1:
+        if (bull_pinbar or bull_engulfing) and trend_up and rsi < 72 and prev_sig != 1:
             df.iloc[i, df.columns.get_loc("Signal")] = 1
             df.iloc[i, df.columns.get_loc("ArrowPrice")] = l - (atr * 0.35)
-            df.iloc[i, df.columns.get_loc("Pattern")] = "Objęcie Hossy" if bull_engulfing else ("Pinbar Wzrostowy" if bull_pinbar else "Impuls Wzrostowy")
-        elif (bear_pinbar or bear_engulfing or bear_impulse) and trend_down and rsi > 28 and prev_sig != -1:
+            df.iloc[i, df.columns.get_loc("Pattern")] = "Objęcie Hossy" if bull_engulfing else "Pinbar Wzrostowy"
+        elif (bear_pinbar or bear_engulfing) and trend_down and rsi > 28 and prev_sig != -1:
             df.iloc[i, df.columns.get_loc("Signal")] = -1
             df.iloc[i, df.columns.get_loc("ArrowPrice")] = h + (atr * 0.35)
-            df.iloc[i, df.columns.get_loc("Pattern")] = "Objęcie Bessy" if bear_engulfing else ("Pinbar Spadkowy" if bear_pinbar else "Impuls Spadkowy")
+            df.iloc[i, df.columns.get_loc("Pattern")] = "Objęcie Bessy" if bear_engulfing else "Pinbar Spadkowy"
 
     return df, htf_bias
 
-# ==========================================
-# PANEL BOCZNY: USTAWIENIA I LOGOWANIE
-# ==========================================
 saved = st.session_state["saved_keys"]
 
 with st.sidebar:
     st.title("⚡ Kolega Gemini PRO")
-    st.caption("Scalping US500 • Auto-Bot • Archiwum")
-
     with st.expander("🔑 Klucze API i Logowanie", expanded=not bool(saved.get("cap_key"))):
         with st.form("api_login_form"):
-            is_demo_in = st.checkbox("Konto DEMO Capital.com", value=saved.get("is_demo", True))
+            is_demo_in = st.checkbox("Konto DEMO", value=saved.get("is_demo", True))
             cap_key_in = st.text_input("Capital API Key:", value=saved.get("cap_key", ""), type="password")
             cap_id_in = st.text_input("Capital Login (Email):", value=saved.get("cap_id", ""))
             cap_pass_in = st.text_input("Capital Hasło API:", value=saved.get("cap_pass", ""), type="password")
             openai_key_in = st.text_input("OpenAI API Key (do czatu):", value=saved.get("openai_key", ""), type="password")
-            login_submitted = st.form_submit_button("🔐 ZALOGUJ I ZAPISZ KLUCZE", use_container_width=True, type="primary")
-
+            login_submitted = st.form_submit_button("🔐 ZALOGUJ", use_container_width=True, type="primary")
         if login_submitted:
             save_cached_keys(is_demo_in, cap_key_in, cap_id_in, cap_pass_in, openai_key_in)
-            saved = st.session_state["saved_keys"]
-            test_client = CapitalComClient(saved["cap_key"], saved["cap_id"], saved["cap_pass"], is_demo=saved["is_demo"])
-            ok, auth_msg = test_client.authenticate()
-            if ok: st.success(auth_msg)
-            else: st.error(auth_msg)
-
-        if saved.get("cap_key") and saved.get("cap_id"):
-            st.caption(f"📌 Zalogowany: `{saved.get('cap_id')}`")
-            if st.button("🗑️ Wyloguj", use_container_width=True):
+            st.rerun()
+        if saved.get("cap_key"):
+            if st.button("🗑️ Wyloguj"):
                 save_cached_keys(True, "", "", "", "")
                 if os.path.exists(KEYS_CACHE_FILE): os.remove(KEYS_CACHE_FILE)
                 st.rerun()
 
     st.markdown("---")
-    st.subheader("1. Parametry Scalpingu")
-    resolution = st.selectbox("Interwał wykresu:", ["MINUTE", "MINUTE_5", "MINUTE_15"], index=0)
-    sensitivity = st.radio("Czułość strzałek:", ["Standard", "Wysoka (Więcej strzałek)", "Tylko Pewniaki (M1 + M5 zgodne)"], index=0)
-    max_spread = st.slider("Maksymalny Spread (pkt):", 0.2, 2.0, 0.8, 0.1)
+    resolution = st.selectbox("Interwał:", ["MINUTE", "MINUTE_5", "MINUTE_15"], index=0)
+    sensitivity = st.radio("Czułość:", ["Standard", "Wysoka (Więcej strzałek)", "Tylko Pewniaki"], index=0)
+    max_spread = st.slider("Maks. Spread (pkt):", 0.2, 2.0, 0.8, 0.1)
+    auto_bot_enabled = st.toggle("🤖 Auto-Bot (Paper Trading)", value=True)
+    sound_enabled = st.toggle("🔊 Piszczenie", value=True)
+    auto_refresh = st.toggle("🔄 Auto-odświeżanie", value=False)
+    refresh_sec = st.slider("Co ile sekund:", 5, 60, 15)
 
-    st.subheader("2. Tryb Auto-Bota (Paper Trading)")
-    auto_bot_enabled = st.toggle("🤖 Włącz Auto-Bota (Gra na niby)", value=True)
+st.title("🎯 SP500 SIGNAL AI PRO — Wersja z Auto-Botem i Newsami")
 
-    st.subheader("3. Dźwięk i Odświeżanie")
-    sound_enabled = st.toggle("🔊 Piszczenie przy sygnale", value=True)
-    auto_refresh = st.toggle("🔄 Auto-odświeżanie wykresu", value=False)
-    refresh_sec = st.slider("Odświeżaj co (sekundy):", 5, 60, 15)
-
-# ==========================================
-# POBRANIE DANYCH I ANALIZA
-# ==========================================
-st.title("🎯 SP500 SIGNAL AI PRO — Wersja z Auto-Botem i Archiwum")
-
-cap_key = saved.get("cap_key", "")
-cap_id = saved.get("cap_id", "")
-cap_pass = saved.get("cap_pass", "")
-is_demo = saved.get("is_demo", True)
-openai_key = saved.get("openai_key", "")
-
-client = CapitalComClient(cap_key, cap_id, cap_pass, is_demo=is_demo)
+client = CapitalComClient(saved.get("cap_key",""), saved.get("cap_id",""), saved.get("cap_pass",""), is_demo=saved.get("is_demo",True))
 df_raw, current_spread, source_status = client.fetch_candles(epic="US500", resolution=resolution, max_bars=120)
-
 htf_res = "MINUTE_5" if resolution == "MINUTE" else "MINUTE_15"
 df_htf, _, _ = client.fetch_candles(epic="US500", resolution=htf_res, max_bars=60)
 
@@ -388,172 +296,110 @@ if df_raw.empty:
     df_raw, current_spread, source_status = fetch_fallback_data(resolution)
     df_htf, _, _ = fetch_fallback_data(htf_res)
 
-if df_raw.empty or len(df_raw) < 25:
-    st.error(f"Nie udało się pobrać świec: {source_status}")
-    st.stop()
-
 df, htf_bias = detect_scalping_signals(df_raw, df_htf, sensitivity=sensitivity)
-
-closed_candle = df.iloc[-2]
-live_candle = df.iloc[-1]
-current_price = float(live_candle["Close"])
-current_atr = float(closed_candle["ATR"])
-current_rsi = float(closed_candle["RSI"])
-
-active_sig = int(closed_candle["Signal"])
-active_pattern = closed_candle["Pattern"]
-sig_time = str(df.index[-2])
-
-if active_sig == 0 and int(live_candle["Signal"]) != 0:
-    active_sig = int(live_candle["Signal"])
-    active_pattern = f"{live_candle['Pattern']} (Na żywo!)"
-    sig_time = str(df.index[-1])
-
+closed_candle, live_candle = df.iloc[-2], df.iloc[-1]
+current_price, current_atr, current_rsi = float(live_candle["Close"]), float(closed_candle["ATR"]), float(closed_candle["RSI"])
+active_sig, active_pattern, sig_time = int(closed_candle["Signal"]), closed_candle["Pattern"], str(df.index[-2])
 spread_ok = (current_spread is None) or (current_spread <= max_spread)
+news_cache = fetch_market_news()
 
-# ==========================================
-# AUTOMATYCZNE ZAPISYWANIE DO ARCHIWUM (AUTO-BOT)
-# ==========================================
 archive = st.session_state["paper_trades"]
 if auto_bot_enabled and active_sig != 0 and spread_ok:
-    # Sprawdzamy czy ten sygnał nie jest już w archiwum
-    last_archived_time = archive[-1]["time"] if archive else ""
-    if last_archived_time != sig_time:
+    if not archive or archive[-1]["time"] != sig_time:
         dir_str = "LONG" if active_sig == 1 else "SHORT"
         sl = round(current_price - (1.5 * current_atr) if active_sig == 1 else current_price + (1.5 * current_atr), 2)
         tp = round(current_price + (2.5 * current_atr) if active_sig == 1 else current_price - (2.5 * current_atr), 2)
-        
-        new_trade = {
-            "time": sig_time,
-            "type": dir_str,
-            "pattern": active_pattern,
-            "entry": current_price,
-            "sl": sl,
-            "tp": tp,
-            "status": "OTWARTA (W toku)"
-        }
-        archive.append(new_trade)
+        archive.append({"time": sig_time, "type": dir_str, "pattern": active_pattern, "entry": current_price, "sl": sl, "tp": tp, "status": "OTWARTA"})
         st.session_state["paper_trades"] = archive
         save_paper_archive(archive)
 
-# Symulacja rozliczania otwartych wirtualnych pozycji w archiwum
 for t in archive:
-    if t["status"] == "OTWARTA (W toku)":
+    if t["status"] == "OTWARTA":
         if t["type"] == "LONG":
-            if current_price >= t["tp"]:
-                t["status"] = "✅ WYGRANA (TP)"
-            elif current_price <= t["sl"]:
-                t["status"] = "❌ PRZEGRANA (SL)"
+            if current_price >= t["tp"]: t["status"] = "✅ WYGRANA"
+            elif current_price <= t["sl"]: t["status"] = "❌ PRZEGRANA"
         else:
-            if current_price <= t["tp"]:
-                t["status"] = "✅ WYGRANA (TP)"
-            elif current_price >= t["sl"]:
-                t["status"] = "❌ PRZEGRANA (SL)"
+            if current_price <= t["tp"]: t["status"] = "✅ WYGRANA"
+            elif current_price >= t["sl"]: t["status"] = "❌ PRZEGRANA"
 save_paper_archive(archive)
 
-# Alarm dźwiękowy
-if "last_beep_candle" not in st.session_state:
-    st.session_state.last_beep_candle = None
+if "last_beep_candle" not in st.session_state: st.session_state.last_beep_candle = None
+if active_sig != 0 and spread_ok and sound_enabled and st.session_state.last_beep_candle != sig_time:
+    trigger_beep_alarm("LONG" if active_sig == 1 else "SHORT")
+    st.session_state.last_beep_candle = sig_time
 
-if active_sig != 0 and spread_ok:
-    if sound_enabled and st.session_state.last_beep_candle != sig_time:
-        trigger_beep_alarm("LONG" if active_sig == 1 else "SHORT")
-        st.session_state.last_beep_candle = sig_time
-
-# ==========================================
-# GŁÓWNY PANEL I ZAKŁADKI (WYKRES / ARCHIWUM / NEWSY)
-# ==========================================
-tab_main, tab_archive, tab_news = st.tabs(["📊 Wykres & Sygnały na Żywo", "📜 Archiwum Auto-Bota", "📰 Newsy Makro & Ostrzeżenia"])
+tab_main, tab_archive, tab_news = st.tabs(["📊 Wykres", "📜 Archiwum", "📰 Newsy Makro"])
 
 with tab_main:
-    if active_sig == 1 and spread_ok:
-        sl_price = round(current_price - (1.5 * current_atr), 2)
-        tp_price = round(current_price + (2.5 * current_atr), 2)
-        st.success(f"### 🟢 SYGNAŁ LONG: KUPUJ NA US500! | Wejście: `{current_price:.2f}` | SL: `{sl_price}` | TP: `{tp_price}`")
-    elif active_sig == -1 and spread_ok:
-        sl_price = round(current_price + (1.5 * current_atr), 2)
-        tp_price = round(current_price - (2.5 * current_atr), 2)
-        st.error(f"### 🔴 SYGNAŁ SHORT: SPRZEDAJ NA US500! | Wejście: `{current_price:.2f}` | SL: `{sl_price}` | TP: `{tp_price}`")
-    else:
-        st.info("⚪ **CZEKAJ** — Brak silnego sygnału na świecy. Obserwuj poziom EMA9.")
+    if active_sig == 1 and spread_ok: st.success(f"🟢 SYGNAŁ LONG | Wejście: `{current_price:.2f}`")
+    elif active_sig == -1 and spread_ok: st.error(f"🔴 SYGNAŁ SHORT | Wejście: `{current_price:.2f}`")
+    else: st.info("⚪ CZEKAJ na sygnał.")
 
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Cena US500", f"{current_price:.2f}")
-    c2.metric("Spread", f"{current_spread:.2f} pkt", delta="OK" if spread_ok else "ZA DUŻY!", delta_color="normal" if spread_ok else "inverse")
-    c3.metric("ATR (14)", f"{current_atr:.2f} pkt")
-    c4.metric("RSI (14)", f"{current_rsi:.1f}")
-    c5.metric("Auto-Bot", "🟢 AKTYWNY" if auto_bot_enabled else "🔴 WYŁĄCZONY")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Cena", f"{current_price:.2f}")
+    c2.metric("Spread", f"{current_spread:.2f} pkt")
+    c3.metric("ATR", f"{current_atr:.2f}")
+    c4.metric("RSI", f"{current_rsi:.1f}")
 
-    # Wykres Plotly ze strzałkami
     df_plot = df.tail(80)
-    long_signals = df_plot[df_plot["Signal"] == 1]
-    short_signals = df_plot[df_plot["Signal"] == -1]
-
+    long_s, short_s = df_plot[df_plot["Signal"] == 1], df_plot[df_plot["Signal"] == -1]
     fig = go.Figure()
     fig.add_trace(go.Candlestick(x=df_plot.index, open=df_plot["Open"], high=df_plot["High"], low=df_plot["Low"], close=df_plot["Close"], name="US500", increasing_line_color="#00e676", decreasing_line_color="#ff1744"))
     fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot["EMA9"], line=dict(color="#ffea00", width=1.3), name="EMA 9"))
     fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot["EMA21"], line=dict(color="#2979ff", width=1.6), name="EMA 21"))
-
-    if not long_signals.empty:
-        fig.add_trace(go.Scatter(x=long_signals.index, y=long_signals["ArrowPrice"], mode="markers+text", marker=dict(symbol="triangle-up", size=16, color="#00e676"), text=["▲ LONG" for _ in range(len(long_signals))], textposition="bottom center", textfont=dict(color="#00e676", size=10)))
-    if not short_signals.empty:
-        fig.add_trace(go.Scatter(x=short_signals.index, y=short_signals["ArrowPrice"], mode="markers+text", marker=dict(symbol="triangle-down", size=16, color="#ff1744"), text=["▼ SHORT" for _ in range(len(short_signals))], textposition="top center", textfont=dict(color="#ff1744", size=10)))
-
-    fig.update_layout(height=500, template="plotly_dark", xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=30, b=10))
+    if not long_s.empty: fig.add_trace(go.Scatter(x=long_s.index, y=long_s["ArrowPrice"], mode="markers+text", marker=dict(symbol="triangle-up", size=15, color="#00e676"), text=["LONG" for _ in range(len(long_s))], textposition="bottom center"))
+    if not short_s.empty: fig.add_trace(go.Scatter(x=short_s.index, y=short_s["ArrowPrice"], mode="markers+text", marker=dict(symbol="triangle-down", size=15, color="#ff1744"), text=["SHORT" for _ in range(len(short_s))], textposition="top center"))
+    fig.update_layout(height=480, template="plotly_dark", xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=20, b=10))
     st.plotly_chart(fig, use_container_width=True)
 
-    # Panelręcznego zagrania na siłę z podpowiedzią AI
-    with st.expander("⚡ Chcesz zagrać na siłę? Kliknij, aby sprawdzić podpowiedź AI przed wejściem"):
-        force_dir = st.selectbox("Wybierz kierunek, w którym chcesz wejść:", ["LONG", "SHORT"])
-        if st.button("💡 Sprawdź opinię AI na temat tego wejścia", use_container_width=True):
-            with st.spinner("AI analizuje ryzyko..."):
-                if openai_key and OpenAI is not None:
-                    try:
-                        ai_client = OpenAI(api_key=openai_key)
-                        prompt = f"Użytkownik chce na siłę otworzyć pozycję {force_dir} na US500 przy cenie {current_price:.2f}. RSI={current_rsi:.1f}, ATR={current_atr:.2f}, Spread={current_spread}. Oceń ryzyko w 3 punktach i napisz czy odradzasz, czy dajesz zielone światło."
-                        resp = ai_client.chat.completions.create(model="gpt-4o-mini", messages=[{"role": "user", "content": prompt}], temperature=0.3)
-                        st.info(resp.choices[0].message.content)
-                    except Exception as e:
-                        st.error(f"Błąd OpenAI: {e}")
-                else:
-                    st.warning("Wpisz klucz OpenAI w panelu bocznym, aby odblokować podpowiedzi AI.")
+    with st.expander("⚡ Sprawdź opinię AI przed zagraniem na siłę"):
+        force_dir = st.selectbox("Kierunek:", ["LONG", "SHORT"])
+        if st.button("💡 Analizuj wejście", use_container_width=True):
+            openai_key = saved.get("openai_key", "")
+            if openai_key and OpenAI:
+                try:
+                    ai_client = OpenAI(api_key=openai_key)
+                    prompt = f"Chcę wejść {force_dir} na US500. Cena: {current_price}, RSI: {current_rsi}, ATR: {current_atr}. Ostatnie nagłówki newsów: {news_cache}. Daj krótką, konkretną rekomendację."
+                    resp = ai_client.chat.completions.create(model="gpt-4o-mini", messages=[{"role": "user", "content": prompt}], temperature=0.3)
+                    st.info(resp.choices[0].message.content)
+                except Exception as e: st.error(f"Błąd: {e}")
+            else: st.warning("Wpisz klucz OpenAI w panelu bocznym.")
 
 with tab_archive:
-    st.subheader("📜 Archiwum Wirtualnych Zagrań Auto-Bota (Paper Trading)")
-    st.caption("Tutaj bot zapisuje każdą pozycję otwartą automatycznie na podstawie wykrytych strzałek i sprawdza, czy osiągnęła TP czy SL.")
-    
-    if archive:
-        df_arch = pd.DataFrame(archive)
-        st.dataframe(df_arch.iloc[::-1], use_container_width=True)
-        if st.button("🗑️ Wyczyść Archiwum"):
-            st.session_state["paper_trades"] = []
-            save_paper_archive([])
-            st.rerun()
-    else:
-        st.info("Brak wpisów w archiwum. Włącz Auto-Bota, a pozycje będą zapisywać się automatycznie wraz z pojawianiem się sygnałów.")
+    st.subheader("📜 Archiwum Paper Trading")
+    if archive: st.dataframe(pd.DataFrame(archive).iloc[::-1], use_container_width=True)
+    else: st.info("Brak zagrań w archiwum.")
 
 with tab_news:
-    st.subheader("📰 Bieżące Nagłówki Makroekonomiczne (RSS Finance)")
-    st.caption("Bot pobiera najnowsze wiadomości giełdowe, aby ostrzec Cię przed nagłymi skokami zmienności.")
-    news_list = fetch_market_news()
-    for n in news_list:
-        st.markdown(f"🔹 **{n['date']}**: {n['title']}")
+    st.subheader("📰 Bieżące Nagłówki Makro (RSS)")
+    for n in news_cache: st.markdown(f"🔹 {n}")
 
-# ==========================================
-# CZAT-BOT AI
-# ==========================================
 st.markdown("---")
-st.subheader("🤖 Czat z Kolegą AI (Analiza Świec)")
+st.subheader("🤖 Czat z Kolegą AI (Pełny kontekst rynku i newsów)")
 if "chat_history" not in st.session_state: st.session_state.chat_history = []
 for msg in st.session_state.chat_history:
     with st.chat_message(msg["role"]): st.markdown(msg["content"])
 
-user_input = st.chat_input("Zapytaj bota...")
+user_input = st.chat_input("Zadaj pytanie botowi (np. 'czy giełda jest zamknięta i czy warto grać short?')...")
 if user_input:
     st.session_state.chat_history.append({"role": "user", "content": user_input})
     with st.chat_message("user"): st.markdown(user_input)
     with st.chat_message("assistant"):
-        reply = f"Analizuję rynek S&P 500 przy cenie {current_price:.2f}. RSI wynosi {current_rsi:.1f}. Ostatni sygnał to: {active_pattern}."
+        openai_key = saved.get("openai_key", "")
+        if openai_key and OpenAI:
+            try:
+                ai_client = OpenAI(api_key=openai_key)
+                system_prompt = f"Jesteś profesjonalnym analitykiem giełdowym ds. scalpingu US500. Masz dostęp do danych technicznych (Cena: {current_price}, RSI: {current_rsi}, ATR: {current_atr}, Spread: {current_spread}) oraz najnowszych nagłówków newsów makro: {news_cache}. Odpowiadaj krótko, trafnie i konkretnie na pytania użytkownika."
+                resp = ai_client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[{"role": "system", "content": system_prompt}, *st.session_state.chat_history[-6:]],
+                    temperature=0.3
+                )
+                reply = resp.choices[0].message.content
+            except Exception as e:
+                reply = f"Błąd API: {e}"
+        else:
+            reply = f"**[Tryb lokalny]** Cena US500 wynosi {current_price:.2f}, RSI: {current_rsi:.1f}. Ostatnie wiadomości z rynku: {news_cache[0] if news_cache else 'Brak'}. Wpisz klucz OpenAI w panelu bocznym, aby rozmawiać z inteligentnym modelem GPT."
         st.markdown(reply)
         st.session_state.chat_history.append({"role": "assistant", "content": reply})
 
