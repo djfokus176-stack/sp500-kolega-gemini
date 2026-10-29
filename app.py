@@ -39,7 +39,6 @@ def load_cached_keys():
         "cap_pass": "",
         "openai_key": ""
     }
-    # 1. Próba z env / st.secrets
     for k, env_name in [
         ("cap_key", "CAPITAL_API_KEY"),
         ("cap_id", "CAPITAL_IDENTIFIER"),
@@ -55,7 +54,6 @@ def load_cached_keys():
             except Exception:
                 pass
 
-    # 2. Próba z zapisanego pliku po kliknięciu "ZALOGUJ I ZAPISZ"
     if os.path.exists(KEYS_CACHE_FILE):
         try:
             with open(KEYS_CACHE_FILE, "r", encoding="utf-8") as f:
@@ -83,7 +81,6 @@ def save_cached_keys(is_demo, cap_key, cap_id, cap_pass, openai_key):
     except Exception:
         pass
 
-# Inicjalizacja kluczy w pamięci sesji
 if "saved_keys" not in st.session_state:
     st.session_state["saved_keys"] = load_cached_keys()
 
@@ -91,7 +88,6 @@ if "saved_keys" not in st.session_state:
 # MODUŁ DŹWIĘKOWY (PISZCZENIE W PRZEGLĄDARCE)
 # ==========================================
 def trigger_beep_alarm(signal_type="LONG"):
-    """Generuje głośny sygnał dźwiękowy bezpośrednio w przeglądarce (Web Audio API)."""
     freq1 = 880 if signal_type == "LONG" else 520
     freq2 = 1175 if signal_type == "LONG" else 390
     html_code = f"""
@@ -116,8 +112,8 @@ def trigger_beep_alarm(signal_type="LONG"):
             playTone({freq2}, 0.22, 0.18);
             playTone({freq1}, 0.44, 0.30);
         }} catch (e) {{
-            console.log("Audio zablokowane przez przeglądarkę - kliknij w stronę.", e);
-        }
+            console.log("Audio zablokowane", e);
+        }}
     }})();
     </script>
     """
@@ -155,9 +151,9 @@ class CapitalComClient:
                 self.cst = r.headers.get("CST")
                 self.security_token = r.headers.get("X-SECURITY-TOKEN")
                 return True, "✅ Zalogowano do Capital.com API"
-            return False, f"❌ Błąd logowania ({r.status_code}): Sprawdź API Key, Email lub Hasło API"
+            return False, f"❌ Błąd logowania ({r.status_code}): Sprawdź dane"
         except Exception as e:
-            return False, f"❌ Błąd sieci Capital.com: {e}"
+            return False, f"❌ Błąd sieci: {e}"
 
     def fetch_candles(self, epic="US500", resolution="MINUTE", max_bars=120):
         if not self.cst or not self.security_token:
@@ -181,7 +177,7 @@ class CapitalComClient:
             data = r.json()
             prices = data.get("prices", [])
             if not prices:
-                return pd.DataFrame(), None, "Pusta lista świec z Capital.com"
+                return pd.DataFrame(), None, "Pusta lista świec"
 
             rows = []
             last_spread = 0.0
@@ -208,9 +204,8 @@ class CapitalComClient:
 
 
 def fetch_fallback_data(resolution="MINUTE"):
-    """Tryb demonstracyjny (Yahoo Finance), gdy użytkownik nie wpisał jeszcze kluczy API."""
     if yf is None:
-        return pd.DataFrame(), 0.5, "Zainstaluj yfinance lub podaj klucze Capital.com"
+        return pd.DataFrame(), 0.5, "Zainstaluj yfinance lub podaj klucze"
     tf_map = {"MINUTE": "1m", "MINUTE_5": "5m", "MINUTE_15": "15m", "MINUTE_30": "30m", "HOUR": "1h"}
     interval = tf_map.get(resolution, "5m")
     period = "1d" if interval == "1m" else "5d"
@@ -219,13 +214,13 @@ def fetch_fallback_data(resolution="MINUTE"):
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
         df.dropna(inplace=True)
-        return df.tail(120), 0.4, "🟡 Tryb Demo (Yahoo Finance — zaloguj się do Capital.com w panelu bocznym)"
+        return df.tail(120), 0.4, "🟡 Tryb Demo (Yahoo Finance)"
     except Exception as e:
-        return pd.DataFrame(), 0.5, f"Błąd danych: {e}"
+        return pd.DataFrame(), 0.5, f"Błąd: {e}"
 
 
 # ==========================================
-# SILNIK SCALPINGOWY: ŚWIECE + STRZAŁKI
+# SILNIK SCALPINGOWY
 # ==========================================
 def detect_scalping_signals(df_main, df_htf=None, sensitivity="Standard"):
     df = df_main.copy()
@@ -312,7 +307,7 @@ def detect_scalping_signals(df_main, df_htf=None, sensitivity="Standard"):
 
 
 # ==========================================
-# PANEL BOCZNY: USTAWIENIA I PRZYCISK LOGOWANIA
+# PANEL BOCZNY: USTAWIENIA I LOGOWANIE
 # ==========================================
 saved = st.session_state["saved_keys"]
 
@@ -349,25 +344,15 @@ with st.sidebar:
                 st.rerun()
 
     st.markdown("---")
-    st.subheader("1. Parametry Scalpingu")
-    resolution = st.selectbox(
-        "Główny interwał wykresu:",
-        ["MINUTE", "MINUTE_5", "MINUTE_15"],
-        index=0,
-        help="MINUTE = świece 1-minutowe, MINUTE_5 = 5-minutowe"
-    )
-    sensitivity = st.radio(
-        "Czułość strzałek:",
-        ["Standard", "Wysoka (Więcej strzałek)", "Tylko Pewniaki (M1 + M5 zgodne)"],
-        index=0
-    )
+    resolution = st.selectbox("Główny interwał wykresu:", ["MINUTE", "MINUTE_5", "MINUTE_15"], index=0)
+    sensitivity = st.radio("Czułość strzałek:", ["Standard", "Wysoka (Więcej strzałek)", "Tylko Pewniaki (M1 + M5 zgodne)"], index=0)
     max_spread = st.slider("Maksymalny akceptowalny Spread (pkt):", 0.2, 2.0, 0.8, 0.1)
 
     st.subheader("2. Dźwięk i Odświeżanie")
     sound_enabled = st.toggle("🔊 Piszczenie przy nowym sygnale", value=True)
-    if st.button("🔊 Testuj Piszczenie (Sprawdź głośniki)", use_container_width=True):
+    if st.button("🔊 Testuj Piszczenie", use_container_width=True):
         trigger_beep_alarm("LONG")
-        st.toast("Odtworzono sygnał dźwiękowy!")
+        st.toast("Odtworzono sygnał!")
 
     auto_refresh = st.toggle("🔄 Auto-odświeżanie wykresu", value=False)
     refresh_sec = st.slider("Odświeżaj co (sekundy):", 5, 60, 15)
@@ -391,8 +376,6 @@ htf_res = "MINUTE_5" if resolution == "MINUTE" else "MINUTE_15"
 df_htf, _, _ = client.fetch_candles(epic="US500", resolution=htf_res, max_bars=60)
 
 if df_raw.empty:
-    if cap_key or cap_id or cap_pass:
-        st.warning(f"⚠️ Problem z połączeniem Capital.com: **{source_status}**. Przełączono tymczasowo na wykres awaryjny.")
     df_raw, current_spread, source_status = fetch_fallback_data(resolution)
     df_htf, _, _ = fetch_fallback_data(htf_res)
 
@@ -419,9 +402,6 @@ if active_sig == 0 and int(live_candle["Signal"]) != 0:
 
 spread_ok = (current_spread is None) or (current_spread <= max_spread)
 
-# ==========================================
-# OBSŁUGA ALARMU DŹWIĘKOWEGO
-# ==========================================
 if "last_beep_candle" not in st.session_state:
     st.session_state.last_beep_candle = None
 
@@ -430,178 +410,72 @@ if active_sig != 0 and spread_ok:
         trigger_beep_alarm("LONG" if active_sig == 1 else "SHORT")
         st.session_state.last_beep_candle = sig_time
 
-# ==========================================
-# GÓRNY PANEL SYGNAŁOWY (CO GRAĆ TERAZ)
-# ==========================================
 if active_sig == 1 and spread_ok:
     sl_price = round(min(closed_candle["Low"], live_candle["Low"]) - (current_atr * 0.5), 2)
     risk_pts = max(current_price - sl_price, 1.2)
     tp_price = round(current_price + (risk_pts * 1.8), 2)
-    st.success(
-        f"### 🟢 STRZAŁKA W GÓRĘ: WCHODŹ LONG (KUP) NA US500!\n"
-        f"**Formacja:** `{active_pattern}` | **Wejście:** `{current_price:.2f}` | "
-        f"**Stop Loss:** `{sl_price:.2f}` (-{risk_pts:.1f} pkt) | **Take Profit:** `{tp_price:.2f}` (+{risk_pts*1.8:.1f} pkt)"
-    )
+    st.success(f"### 🟢 SYGNAŁ LONG | Wejście: `{current_price:.2f}` | SL: `{sl_price}` | TP: `{tp_price}`")
 elif active_sig == -1 and spread_ok:
     sl_price = round(max(closed_candle["High"], live_candle["High"]) + (current_atr * 0.5), 2)
     risk_pts = max(sl_price - current_price, 1.2)
     tp_price = round(current_price - (risk_pts * 1.8), 2)
-    st.error(
-        f"### 🔴 STRZAŁKA W DÓŁ: WCHODŹ SHORT (SPRZEDAJ) NA US500!\n"
-        f"**Formacja:** `{active_pattern}` | **Wejście:** `{current_price:.2f}` | "
-        f"**Stop Loss:** `{sl_price:.2f}` (-{risk_pts:.1f} pkt) | **Take Profit:** `{tp_price:.2f}` (+{risk_pts*1.8:.1f} pkt)"
-    )
+    st.error(f"### 🔴 SYGNAŁ SHORT | Wejście: `{current_price:.2f}` | SL: `{sl_price}` | TP: `{tp_price}`")
 else:
-    past_signals = df[df["Signal"] != 0]
-    if not past_signals.empty:
-        last_s = past_signals.iloc[-1]
-        dir_txt = "🟢 LONG" if last_s["Signal"] == 1 else "🔴 SHORT"
-        st.info(
-            f"⚪ **CZEKAJ NA NOWĄ STRZAŁKĘ** — Na bieżącej świecy brak nowego sygnału. "
-            f"Ostatnia strzałka na wykresie: **{dir_txt}** ({last_s['Pattern']}) przy cenie `{last_s['Close']:.2f}`."
-        )
-    else:
-        st.info("⚪ **CZEKAJ** — Rynek bez wyraźnego układu świecowego.")
+    st.info("⚪ **CZEKAJ NA NOWĄ STRZAŁKĘ**")
 
 c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("Cena US500", f"{current_price:.2f}")
-c2.metric("Spread (Bid/Ask)", f"{current_spread:.2f} pkt" if current_spread else "Brak", delta="OK" if spread_ok else "ZA DUŻY!", delta_color="normal" if spread_ok else "inverse")
-c3.metric("Zmienność ATR (14)", f"{current_atr:.2f} pkt")
+c2.metric("Spread", f"{current_spread:.2f} pkt" if current_spread else "Brak")
+c3.metric("ATR (14)", f"{current_atr:.2f} pkt")
 c4.metric("RSI (14)", f"{current_rsi:.1f}")
-c5.metric(f"Trend wyższy ({htf_res})", "🟢 WZROSTOWY" if htf_bias >= 0 else "🔴 SPADKOWY")
-st.caption(f"Źródło danych: **{source_status}**")
+c5.metric(f"Trend wyższy", "🟢 WZROSTOWY" if htf_bias >= 0 else "🔴 SPADKOWY")
 
-# ==========================================
-# WYKRES ŚWIECOWY ZE STRZAŁKAMI
-# ==========================================
+# Wykres
 df_plot = df.tail(80)
 long_signals = df_plot[df_plot["Signal"] == 1]
 short_signals = df_plot[df_plot["Signal"] == -1]
 
 fig = go.Figure()
-
-fig.add_trace(go.Candlestick(
-    x=df_plot.index,
-    open=df_plot["Open"],
-    high=df_plot["High"],
-    low=df_plot["Low"],
-    close=df_plot["Close"],
-    name="US500",
-    increasing_line_color="#00e676",
-    decreasing_line_color="#ff1744"
-))
-
-fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot["EMA9"], line=dict(color="#ffea00", width=1.3), name="EMA 9 (Szybka)"))
-fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot["EMA21"], line=dict(color="#2979ff", width=1.6), name="EMA 21 (Trend)"))
+fig.add_trace(go.Candlestick(x=df_plot.index, open=df_plot["Open"], high=df_plot["High"], low=df_plot["Low"], close=df_plot["Close"], name="US500", increasing_line_color="#00e676", decreasing_line_color="#ff1744"))
+fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot["EMA9"], line=dict(color="#ffea00", width=1.3), name="EMA 9"))
+fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot["EMA21"], line=dict(color="#2979ff", width=1.6), name="EMA 21"))
 
 if not long_signals.empty:
-    fig.add_trace(go.Scatter(
-        x=long_signals.index,
-        y=long_signals["ArrowPrice"],
-        mode="markers+text",
-        marker=dict(symbol="triangle-up", size=18, color="#00e676", line=dict(color="white", width=1.5)),
-        text=["▲ LONG" for _ in range(len(long_signals))],
-        textposition="bottom center",
-        textfont=dict(color="#00e676", size=11, family="Arial Black"),
-        hovertext=long_signals["Pattern"],
-        name="Sygnał LONG"
-    ))
-
+    fig.add_trace(go.Scatter(x=long_signals.index, y=long_signals["ArrowPrice"], mode="markers+text", marker=dict(symbol="triangle-up", size=18, color="#00e676"), text=["▲ LONG" for _ in range(len(long_signals))], textposition="bottom center"))
 if not short_signals.empty:
-    fig.add_trace(go.Scatter(
-        x=short_signals.index,
-        y=short_signals["ArrowPrice"],
-        mode="markers+text",
-        marker=dict(symbol="triangle-down", size=18, color="#ff1744", line=dict(color="white", width=1.5)),
-        text=["▼ SHORT" for _ in range(len(short_signals))],
-        textposition="top center",
-        textfont=dict(color="#ff1744", size=11, family="Arial Black"),
-        hovertext=short_signals["Pattern"],
-        name="Sygnał SHORT"
-    ))
+    fig.add_trace(go.Scatter(x=short_signals.index, y=short_signals["ArrowPrice"], mode="markers+text", marker=dict(symbol="triangle-down", size=18, color="#ff1744"), text=["▼ SHORT" for _ in range(len(short_signals))], textposition="top center"))
 
-fig.update_layout(
-    height=540,
-    template="plotly_dark",
-    xaxis_rangeslider_visible=False,
-    margin=dict(l=15, r=15, t=35, b=15),
-    title=f"Wykres Scalpingowy US500 ({resolution}) — Strzałki na zamkniętych świecach",
-    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-)
-
+fig.update_layout(height=540, template="plotly_dark", xaxis_rangeslider_visible=False, margin=dict(l=15, r=15, t=35, b=15))
 st.plotly_chart(fig, use_container_width=True)
 
-# ==========================================
-# CZAT-BOT AI PODPIĘTY POD ŚWIECE
-# ==========================================
+# Czat
 st.markdown("---")
-st.subheader("🤖 Czat z Kolegą AI (Bot widzi powyższe świece i strzałki na żywo)")
-
+st.subheader("🤖 Czat z Kolegą AI")
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
-
-q_col1, q_col2, q_col3 = st.columns(3)
-quick_prompt = None
-if q_col1.button("⚡ Oceń ostatnią strzałkę — wchodzić?", use_container_width=True):
-    quick_prompt = "Oceń ostatnią strzałkę na wykresie i obecne świece. Czy warto teraz wchodzić w pozycję na scalping i gdzie dać ciasny Stop Loss?"
-if q_col2.button("🕯️ Co mówią cienie (knoty) ostatnich 5 świec?", use_container_width=True):
-    quick_prompt = "Przeanalizuj dokładnie korpusy i knoty ostatnich 5 świec na US500. Kto ma przewagę: kupujący czy sprzedający?"
-if q_col3.button("🛑 Czy rynek nie jest w konsolidacji (szumie)?", use_container_width=True):
-    quick_prompt = "Sprawdź ATR, spread oraz układ średnich EMA9/EMA21. Czy mamy czytelny ruch pod scalping, czy lepiej przeczekać szum?"
 
 for msg in st.session_state.chat_history:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-user_input = st.chat_input("Napisz do bota (np. 'Wchodzić w ten ruch czy czekać na korektę do EMA9?')...")
-final_prompt = quick_prompt or user_input
-
-if final_prompt:
-    st.session_state.chat_history.append({"role": "user", "content": final_prompt})
+if user_input := st.chat_input("Napisz do bota..."):
+    st.session_state.chat_history.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
-        st.markdown(final_prompt)
-
-    recent_table = df[["Open", "High", "Low", "Close", "EMA9", "EMA21", "RSI", "ATR", "Signal", "Pattern"]].tail(8).to_string()
-    system_prompt = f"""
-    Jesteś ekspertem od scalpingu na kontrakcie S&P 500 (US500 CFD na Capital.com).
-    Analizujesz wykres na interwale {resolution}.
-    Aktualna cena: {current_price:.2f}, Spread: {current_spread} pkt, ATR: {current_atr:.2f} pkt, RSI: {current_rsi:.1f}.
-    Trend wyższego interwału ({htf_res}): {"WZROSTOWY" if htf_bias >= 0 else "SPADKOWY"}.
-    Ostatnie 8 świec wraz z wykrytymi strzałkami (Signal: 1=LONG, -1=SHORT, 0=Brak):
-    {recent_table}
-    Odpowiadaj po żołniersku, krótko i konkretnie pod szybki scalping:
-    1. Decyzja: WCHODZIĆ (LONG/SHORT) czy CZEKAJ.
-    2. Co pokazują knoty i korpusy ostatnich świec.
-    3. Dokładny poziom wejścia, Stop Loss i Take Profit w punktach S&P 500.
-    """
-
+        st.markdown(user_input)
     with st.chat_message("assistant"):
         if openai_key and OpenAI is not None:
             try:
                 ai_client = OpenAI(api_key=openai_key)
                 resp = ai_client.chat.completions.create(
                     model="gpt-4o-mini",
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        *st.session_state.chat_history[-6:]
-                    ],
+                    messages=[{"role": "system", "content": f"Jesteś traderem US500. Cena: {current_price}, RSI: {current_rsi}."}, *st.session_state.chat_history[-6:]],
                     temperature=0.3
                 )
                 reply = resp.choices[0].message.content
             except Exception as e:
-                reply = f"⚠️ Błąd klucza OpenAI API: `{e}`"
+                reply = f"Błąd API: {e}"
         else:
-            last_5 = df.tail(5)
-            bull_candles = sum(last_5["Close"] > last_5["Open"])
-            avg_range = (last_5["High"] - last_5["Low"]).mean()
-            dir_advice = "🟢 **Przewaga popytu (LONG)**" if closed_candle["EMA9"] > closed_candle["EMA21"] else "🔴 **Przewaga podaży (SHORT)**"
-            reply = (
-                f"**[Analiza Lokalna Silnika Świec US500]**\n"
-                f"- **Układ średnich i pędu:** {dir_advice} (EMA9 = `{closed_candle['EMA9']:.2f}`, EMA21 = `{closed_candle['EMA21']:.2f}`, RSI = `{current_rsi:.1f}`).\n"
-                f"- **Zachowanie ostatnich 5 świec:** {bull_candles}/5 świec wzrostowych, średni rozmach świecy wynosi `{avg_range:.2f}` pkt (ATR: `{current_atr:.2f}` pkt).\n"
-                f"- **Wskazówka:** {'Mamy aktywną strzałkę `' + active_pattern + '` — pilnuj ciasnego SL za knotem świecy!' if active_sig != 0 else 'Brak świeżej strzałki na zamknięciu ostatniej świecy — poczekaj na dojście ceny do EMA9 i wyraźny Pinbar lub Objęcie.'}\n\n"
-                f"*(Wpisz klucz OpenAI w panelu bocznym i kliknij ZALOGUJ I ZAPISZ KLUCZE, aby odblokować pełny czat GPT).* "
-            )
+            reply = f"Cena US500: {current_price:.2f}, RSI: {current_rsi:.1f}. Wpisz klucz OpenAI w panelu bocznym."
         st.markdown(reply)
         st.session_state.chat_history.append({"role": "assistant", "content": reply})
 
