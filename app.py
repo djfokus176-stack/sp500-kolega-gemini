@@ -1,6 +1,3 @@
-
-app.py
-100%
 import os
 import json
 import time
@@ -120,7 +117,7 @@ def trigger_beep_alarm(signal_type="LONG"):
             playTone({freq1}, 0.44, 0.30);
         }} catch (e) {{
             console.log("Audio zablokowane przez przeglądarkę - kliknij w stronę.", e);
-        }}
+        }
     }})();
     </script>
     """
@@ -323,7 +320,6 @@ with st.sidebar:
     st.title("⚡ Kolega Gemini PRO")
     st.caption("Scalping US500 • Strzałki • Alarm • Czat AI")
 
-    # SEKCJA LOGOWANIA Z PRZYCISKIEM NA SAMEJ GÓRZE LUB W EXPANDERZE
     with st.expander("🔑 Klucze API i Logowanie", expanded=not bool(saved.get("cap_key"))):
         with st.form("api_login_form", clear_on_submit=False):
             is_demo_in = st.checkbox("Konto DEMO Capital.com", value=saved.get("is_demo", True))
@@ -612,4 +608,3 @@ if final_prompt:
 if auto_refresh:
     time.sleep(refresh_sec)
     st.rerun()
-Wyświetlam app.py.
