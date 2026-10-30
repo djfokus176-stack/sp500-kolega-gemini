@@ -409,12 +409,11 @@ def detect_signals_and_waves(df_main, df_htf=None, trade_style="🔥 FALA 30 PKT
     df["TP"] = np.nan
 
     is_wave_30 = "30 PKT" in trade_style
-    wick_ratio = 1.5 if sensitivity == "Wysoka (Więcej strzałek)" else 1.85
-    min_cooldown = 6 if is_wave_30 else (2 if sensitivity == "Wysoka (Więcej strzałek)" else 4)
+    wick_ratio = 1.4 if sensitivity == "Wysoka (Więcej strzałek)" else 1.7
+    min_cooldown = 6 if is_wave_30 else (3 if sensitivity == "Wysoka (Więcej strzałek)" else 5)
     last_sig_idx = -20
 
-    # TWARDA BLOKADA: Pętla kończy się na len(df) - 1!
-    # Ostatnia świeca (indeks len(df)-1) NIGDY nie jest sprawdzana, bo jeszcze się rysuje!
+    # TWARDA BLOKADA: Analizujemy wyłącznie ZAMKNIĘTE świece (do len(df) - 1)
     for i in range(5, len(df) - 1):
         if (i - last_sig_idx) < min_cooldown:
             continue
@@ -423,6 +422,7 @@ def detect_signals_and_waves(df_main, df_htf=None, trade_style="🔥 FALA 30 PKT
         po, ph, pl, pc = df["Open"].iloc[i - 1], df["High"].iloc[i - 1], df["Low"].iloc[i - 1], df["Close"].iloc[i - 1]
         ema9, ema21, ema50 = df["EMA9"].iloc[i], df["EMA21"].iloc[i], df["EMA50"].iloc[i]
         ema9_prev3 = df["EMA9"].iloc[i - 3]
+        ema21_prev3 = df["EMA21"].iloc[i - 3]
         rsi = df["RSI"].iloc[i]
         atr = max(df["ATR"].iloc[i], 0.5)
         bar_htf_bias = int(df["HTF_Bias"].iloc[i])
@@ -432,38 +432,44 @@ def detect_signals_and_waves(df_main, df_htf=None, trade_style="🔥 FALA 30 PKT
         upper_wick = h - max(o, c)
         lower_wick = min(o, c) - l
 
+        # Filtr Anty-Konsolidacyjny
         ema_gap = abs(ema9 - ema21)
         ema_slope = ema9 - ema9_prev3
-        is_chop = (ema_gap < atr * 0.12) and (abs(ema_slope) < atr * 0.18)
+        ema21_slope = ema21 - ema21_prev3
+        is_chop = (ema_gap < atr * 0.15) and (abs(ema_slope) < atr * 0.20)
 
         if sensitivity != "Wysoka (Więcej strzałek)" and is_chop:
             continue
 
-        close_near_high = ((c - l) / rng) >= 0.60
-        close_near_low = ((h - c) / rng) >= 0.60
+        close_near_high = ((c - l) / rng) >= 0.55
+        close_near_low = ((h - c) / rng) >= 0.55
 
-        bull_pinbar = (lower_wick >= body * wick_ratio) and (lower_wick >= rng * 0.45) and close_near_high
+        # Sygnały wejścia ZGODNE Z TRENDEM (odrzucenie od średnich EMA lub przecięcie startu fali)
+        bull_pinbar = (lower_wick >= body * wick_ratio) and (lower_wick >= rng * 0.40) and close_near_high and (c > o)
         bull_engulfing = (pc < po) and (c > o) and (c > po) and (body >= atr * 0.35)
-        bull_impulse = (c > o) and (body > atr * 0.80) and (c > ema9) and (po <= ema9)
+        bull_pullback = (l <= ema21) and (c > ema9) and (c > o) and close_near_high
         bull_wave_break = (c > o) and (c > ema9) and (ema9 > ema21) and (df["EMA9"].iloc[i - 2] <= df["EMA21"].iloc[i - 2])
 
-        bear_pinbar = (upper_wick >= body * wick_ratio) and (upper_wick >= rng * 0.45) and close_near_low
+        bear_pinbar = (upper_wick >= body * wick_ratio) and (upper_wick >= rng * 0.40) and close_near_low and (c < o)
         bear_engulfing = (pc > po) and (c < o) and (c < po) and (body >= atr * 0.35)
-        bear_impulse = (c < o) and (body > atr * 0.80) and (c < ema9) and (po >= ema9)
+        bear_pullback = (h >= ema21) and (c < ema9) and (c < o) and close_near_low
         bear_wave_break = (c < o) and (c < ema9) and (ema9 < ema21) and (df["EMA9"].iloc[i - 2] >= df["EMA21"].iloc[i - 2])
 
-        trend_up = (ema9 > ema21 and ema_slope >= 0) or (rsi < 33 and close_near_high)
-        trend_down = (ema9 < ema21 and ema_slope <= 0) or (rsi > 67 and close_near_low)
+        # ŻELAZNA ZASADA TRENDU: Zero łapania dołków/górek pod prąd!
+        # LONG tylko gdy EMA9 > EMA21 i cena powyżej EMA50
+        # SHORT tylko gdy EMA9 < EMA21 i cena poniżej EMA50
+        trend_up = (ema9 > ema21) and (c > ema50) and (ema_slope > 0) and (ema21_slope >= 0)
+        trend_down = (ema9 < ema21) and (c < ema50) and (ema_slope < 0) and (ema21_slope <= 0)
 
         if sensitivity == "Tylko Pewniaki (Filtr Konsolidacji)" and bar_htf_bias != 0:
-            trend_up = trend_up and (bar_htf_bias == 1 or rsi < 30)
-            trend_down = trend_down and (bar_htf_bias == -1 or rsi > 70)
+            trend_up = trend_up and (bar_htf_bias == 1)
+            trend_down = trend_down and (bar_htf_bias == -1)
 
         next_open = float(df["Open"].iloc[i + 1])
         next_time_str = str(df.index[i + 1].strftime("%Y-%m-%d %H:%M:%S"))
         half_spread = float(spread_pts or 0.6) / 2.0
 
-        if (bull_pinbar or bull_engulfing or bull_impulse or bull_wave_break) and trend_up and rsi < 70:
+        if (bull_pinbar or bull_engulfing or bull_pullback or bull_wave_break) and trend_up and (42 <= rsi <= 72):
             df.iloc[i, df.columns.get_loc("Signal")] = 1
             df.iloc[i, df.columns.get_loc("ArrowPrice")] = l - (atr * 0.40)
             real_entry = round(next_open + half_spread, 2)
@@ -476,15 +482,15 @@ def detect_signals_and_waves(df_main, df_htf=None, trade_style="🔥 FALA 30 PKT
                 df.iloc[i, df.columns.get_loc("SL")] = round(real_entry - sl_dist, 2)
                 df.iloc[i, df.columns.get_loc("TP1")] = round(real_entry + 15.0, 2)
                 df.iloc[i, df.columns.get_loc("TP")] = round(real_entry + 30.0, 2)
-                df.iloc[i, df.columns.get_loc("Pattern")] = "🔥 FALA 30 PKT LONG"
+                df.iloc[i, df.columns.get_loc("Pattern")] = "🔥 FALA TRENDU LONG"
             else:
                 df.iloc[i, df.columns.get_loc("SL")] = round(min(l, real_entry - atr) - (atr * 0.35), 2)
                 df.iloc[i, df.columns.get_loc("TP1")] = round(real_entry + (atr * 1.2), 2)
                 df.iloc[i, df.columns.get_loc("TP")] = round(real_entry + (atr * 2.0), 2)
-                df.iloc[i, df.columns.get_loc("Pattern")] = "Objęcie (LONG)" if bull_engulfing else ("Pinbar (LONG)" if bull_pinbar else "Impuls (LONG)")
+                df.iloc[i, df.columns.get_loc("Pattern")] = "Trend LONG"
             last_sig_idx = i
 
-        elif (bear_pinbar or bear_engulfing or bear_impulse or bear_wave_break) and trend_down and rsi > 30:
+        elif (bear_pinbar or bear_engulfing or bear_pullback or bear_wave_break) and trend_down and (28 <= rsi <= 58):
             df.iloc[i, df.columns.get_loc("Signal")] = -1
             df.iloc[i, df.columns.get_loc("ArrowPrice")] = h + (atr * 0.40)
             real_entry = round(next_open - half_spread, 2)
@@ -497,26 +503,21 @@ def detect_signals_and_waves(df_main, df_htf=None, trade_style="🔥 FALA 30 PKT
                 df.iloc[i, df.columns.get_loc("SL")] = round(real_entry + sl_dist, 2)
                 df.iloc[i, df.columns.get_loc("TP1")] = round(real_entry - 15.0, 2)
                 df.iloc[i, df.columns.get_loc("TP")] = round(real_entry - 30.0, 2)
-                df.iloc[i, df.columns.get_loc("Pattern")] = "🔥 ZJAZD 30 PKT SHORT"
+                df.iloc[i, df.columns.get_loc("Pattern")] = "🔥 ZJAZD TRENDU SHORT"
             else:
                 df.iloc[i, df.columns.get_loc("SL")] = round(max(h, real_entry + atr) + (atr * 0.35), 2)
                 df.iloc[i, df.columns.get_loc("TP1")] = round(real_entry - (atr * 1.2), 2)
                 df.iloc[i, df.columns.get_loc("TP")] = round(real_entry - (atr * 2.0), 2)
-                df.iloc[i, df.columns.get_loc("Pattern")] = "Objęcie (SHORT)" if bear_engulfing else ("Pinbar (SHORT)" if bear_pinbar else "Impuls (SHORT)")
+                df.iloc[i, df.columns.get_loc("Pattern")] = "Trend SHORT"
             last_sig_idx = i
 
     return df, current_htf_bias
 
 def sync_and_evaluate_persistent_archive(df, resolution):
-    """
-    Zapisuje każdy potwierdzony (po zamknięciu świecy!) sygnał do trwałego pliku na dysku
-    oraz aktualizuje wyniki (TP1 / TP2 / SL) wszystkich historycznych sygnałów.
-    """
     archive = st.session_state.get("persistent_archive", [])
     existing_ids = {item.get("id") for item in archive}
     now_clock = datetime.datetime.now(PL_TZ).strftime("%Y-%m-%d %H:%M:%S")
 
-    # 1. Dodaj nowe sygnały wyłącznie z ZAMKNIĘTYCH świec (indeksy od 0 do len(df)-2)
     for i in range(len(df) - 1):
         sig = int(df["Signal"].iloc[i])
         if sig == 0:
@@ -548,7 +549,6 @@ def sync_and_evaluate_persistent_archive(df, resolution):
             })
             existing_ids.add(sig_id)
 
-    # 2. Aktualizuj statusy otwartych pozycji na podstawie świec po momencie wejścia
     for item in archive:
         if item.get("interwal") != resolution:
             continue
@@ -640,8 +640,8 @@ def sync_and_evaluate_persistent_archive(df, resolution):
 saved = st.session_state["saved_keys"]
 
 with st.sidebar:
-    st.title("⚡ Master Edition PC (v5)")
-    st.caption("Trwałe Archiwum • Blokada Świecy Na Żywo • Fala 30 PKT")
+    st.title("⚡ Master Edition PC (v5.1)")
+    st.caption("Żelazny Trend EMA 50 • Trwałe Archiwum • Fala 30 PKT")
 
     with st.expander("🔑 Klucze API (Zapis na dysku PC)", expanded=not bool(saved.get("cap_key"))):
         with st.form("api_login_form", clear_on_submit=False):
@@ -695,7 +695,7 @@ with st.sidebar:
     auto_refresh = st.toggle("🔄 Auto-odświeżanie na żywo", value=True)
     refresh_sec = st.slider("Co ile sekund:", 5, 30, 5)
 
-st.title("🎯 SP500 SIGNAL AI PRO — Wersja PC + Trwałe Archiwum Sygnałów")
+st.title("🎯 SP500 SIGNAL AI PRO — Żelazny Trend + Trwałe Archiwum")
 
 client = CapitalComClient(
     saved.get("cap_key", ""),
@@ -724,7 +724,6 @@ archive_df = sync_and_evaluate_persistent_archive(df, resolution)
 articles, feed_status, news_sentiment_str, news_bias_code, bull_sc, bear_sc = fetch_full_macro_news_and_sentiment()
 in_macro_window, macro_window_label = check_us_macro_window()
 
-# Podział na: OSTATNIĄ ZAMKNIĘTĄ ŚWIECĘ (iloc[-2]) oraz RYSUJĄCĄ SIĘ ŚWIECĘ NA ŻYWO (iloc[-1])
 closed_candle = df.iloc[-2]
 live_candle = df.iloc[-1]
 closed_candle_time = df.index[-2]
@@ -743,7 +742,6 @@ recent_low = float(recent_window["Low"].min())
 drop_from_high = round(recent_high - current_price, 1)
 rally_from_low = round(current_price - recent_low, 1)
 
-# Pasek dowodu blokady świecy w trakcie rysowania
 st.caption(
     f"🔒 **BLOKADA ŚWIECY W TRAKCIE RYSOWANIA AKTYWNA:** Świeca `{live_candle_time.strftime('%H:%M')}` dopiero się tworzy "
     f"(do zamknięcia minuty zostało ok. `{sec_left_in_min} sek.`). Bot **NIGDY** nie stawia strzałki na tworzącej się świecy — "
@@ -780,7 +778,6 @@ if active_sig != 0 and spread_ok and not live_invalidated:
             trigger_beep_alarm("LONG" if active_sig == 1 else "SHORT")
         st.session_state.last_beep_candle = sig_time
 
-# Statystyki z trwałego archiwum
 if not archive_df.empty:
     wins = len(archive_df[archive_df["status"].str.startswith("✅") | archive_df["status"].str.startswith("🟢")])
     losses = len(archive_df[archive_df["status"].str.startswith("❌")])
@@ -865,7 +862,6 @@ with tab_main:
             name="Sygnał SHORT"
         ))
 
-    # Oznaczenie ostatniej rysującej się świecy na wykresie
     fig.add_annotation(
         x=live_candle_time,
         y=float(live_candle["High"]),
