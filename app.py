@@ -1,4 +1,6 @@
-import os
+import ast
+
+v6_code = '''import os
 import re
 import html
 import json
@@ -161,9 +163,6 @@ def trigger_beep_alarm(signal_type="LONG"):
     """
     components.html(html_code, height=0, width=0)
 
-# ==========================================
-# ZEGAR RYNKÓW ŚWIATOWYCH (KIEDY OTWIERA I ZAMYKA RYNKI)
-# ==========================================
 def get_global_markets_schedule():
     now_pl = datetime.datetime.now(PL_TZ)
     now_ny = datetime.datetime.now(NY_TZ)
@@ -172,7 +171,6 @@ def get_global_markets_schedule():
 
     is_weekend = now_ny.weekday() >= 5
 
-    # 1. Wall Street / NYSE (09:30 - 16:00 ET)
     ny_hm = now_ny.hour * 60 + now_ny.minute
     ny_open_hm = 9 * 60 + 30
     ny_close_hm = 16 * 60
@@ -189,7 +187,6 @@ def get_global_markets_schedule():
         else:
             ny_status = f"🔴 ZAMKNIĘTY (Sesja główna USA: {ny_open_dt.strftime('%H:%M')}–{ny_close_dt.strftime('%H:%M')} PL)"
 
-    # 2. Londyn / Europa (08:00 - 16:30 UK)
     lon_hm = now_lon.hour * 60 + now_lon.minute
     lon_open_hm = 8 * 60
     lon_close_hm = 16 * 60 + 30
@@ -199,7 +196,6 @@ def get_global_markets_schedule():
     else:
         eu_status = "🔴 ZAMKNIĘTY (Sesja Europy: 09:00–17:30 PL)"
 
-    # 3. Kontrakty US500 CFD (Capital.com 24/5 z przerwą techniczną 17:00-18:00 ET)
     if is_weekend:
         cfd_status = "🔴 PRZERWA WEEKENDOWA (Otwiera w nocy z niedzieli na poniedziałek o 00:00 PL)"
     elif 17 * 60 <= ny_hm < 18 * 60:
@@ -208,7 +204,6 @@ def get_global_markets_schedule():
     else:
         cfd_status = "🟢 OTWARTY 24/5 (Handel na US500 CFD aktywny non-stop)"
 
-    # 4. Tokio / Azja (09:00 - 15:00 JST)
     tok_hm = now_tok.hour * 60 + now_tok.minute
     if not is_weekend and (9 * 60 <= tok_hm < 15 * 60):
         asia_status = "🟢 OTWARTY (Sesja Azjatycka trwa)"
@@ -229,7 +224,7 @@ def clean_html_text(raw_text):
         return ""
     text = html.unescape(str(raw_text))
     text = re.sub(r"<[^>]+>", " ", text)
-    text = re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"\\s+", " ", text).strip()
     return text
 
 @st.cache_data(ttl=120)
@@ -332,9 +327,6 @@ def check_us_macro_window():
             return True, label
     return False, f"Czas NY: {now_ny.strftime('%H:%M')} ET (Brak blokady danych)"
 
-# ==========================================
-# KLIENT API CAPITAL.COM (ŚWIECE + AUTO-TRADING DEMO)
-# ==========================================
 class CapitalComClient:
     def __init__(self, api_key, identifier, password, is_demo=True):
         self.base_url = "https://demo-api-capital.backend-capital.com" if is_demo else "https://api-capital.backend-capital.com"
@@ -499,9 +491,6 @@ def fetch_fallback_data(resolution="MINUTE"):
     except Exception as e:
         return pd.DataFrame(), 0.6, f"Błąd fallbacku: {e}"
 
-# ==========================================
-# MODUŁ SAMO-AUDYTU I UCZENIA SIĘ NA BŁĘDACH
-# ==========================================
 def run_self_learning_audit(archive_list):
     default_params = {
         "min_atr_mult": 0.15,
@@ -578,9 +567,6 @@ def run_self_learning_audit(archive_list):
         "bad_count": len(bad_signals)
     }
 
-# ==========================================
-# SILNIK CYKLU ŻYCIA POZYCJI: OTWIERA ➔ PROWADZI ➔ ZAMYKA W ZYSKU
-# ==========================================
 def detect_signals_and_waves(df_main, df_htf=None, trade_style="🔥 FALA 30 PKT (Trzymaj + Auto-Zamykanie Zysku)", sensitivity="Tylko Pewniaki (Filtr Konsolidacji)", spread_pts=0.6, learned_params=None):
     if learned_params is None:
         learned_params = run_self_learning_audit([])
@@ -628,7 +614,7 @@ def detect_signals_and_waves(df_main, df_htf=None, trade_style="🔥 FALA 30 PKT
     df["SL"] = np.nan
     df["TP1"] = np.nan
     df["TP"] = np.nan
-    df["ExitSignal"] = 0          # 1 = 💰 ZAMKNIJ ZYSK, -1 = 🛑 STOP LOSS
+    df["ExitSignal"] = 0
     df["ExitPrice"] = np.nan
     df["ExitLabel"] = ""
 
@@ -643,7 +629,6 @@ def detect_signals_and_waves(df_main, df_htf=None, trade_style="🔥 FALA 30 PKT
     active_pos = None
     last_exit_idx = -10
 
-    # TWARDA BLOKADA: Pętla analizuje wyłącznie ZAMKNIĘTE świece (do len(df) - 1)
     for i in range(5, len(df) - 1):
         o, h, l, c = float(df["Open"].iloc[i]), float(df["High"].iloc[i]), float(df["Low"].iloc[i]), float(df["Close"].iloc[i])
         po, ph, pl, pc = float(df["Open"].iloc[i - 1]), float(df["High"].iloc[i - 1]), float(df["Low"].iloc[i - 1]), float(df["Close"].iloc[i - 1])
@@ -654,7 +639,6 @@ def detect_signals_and_waves(df_main, df_htf=None, trade_style="🔥 FALA 30 PKT
         atr = max(float(df["ATR"].iloc[i]), 0.5)
         bar_htf_bias = int(df["HTF_Bias"].iloc[i])
 
-        # KROK A: JEŚLI MAMY OTWARTĄ POZYCJĘ — SPRAWDŹ CZY ZAMKNĄĆ W ZYSKU LUB SL
         if active_pos is not None:
             p_sig = active_pos["sig"]
             p_entry = active_pos["entry"]
@@ -701,7 +685,7 @@ def detect_signals_and_waves(df_main, df_htf=None, trade_style="🔥 FALA 30 PKT
                         last_exit_idx = i
                         continue
 
-            else:  # SHORT
+            else:
                 fav = p_entry - l
                 if fav > active_pos["max_fav"]:
                     active_pos["max_fav"] = fav
@@ -742,7 +726,6 @@ def detect_signals_and_waves(df_main, df_htf=None, trade_style="🔥 FALA 30 PKT
 
             continue
 
-        # KROK B: BRAK OTWARTEJ POZYCJI — SZUKAMY NOWEGO SYGNAŁU WEJŚCIA
         if (i - last_exit_idx) < 2:
             continue
 
@@ -999,7 +982,7 @@ def sync_and_evaluate_persistent_archive(df, resolution):
 saved = st.session_state["saved_keys"]
 
 with st.sidebar:
-    st.title("⚡ Master Edition v6")
+    st.title("⚡ Master Edition v6 (Kopia Awaryjna)")
     st.caption("Auto-Zamykanie Zysku • Samo-Audyt • Godziny Rynków")
 
     with st.expander("🔑 Klucze API (Zapis na dysku PC)", expanded=not bool(saved.get("cap_key"))):
@@ -1049,8 +1032,7 @@ with st.sidebar:
     st.subheader("2. Automat Giełdowy (Opcjonalnie)")
     auto_trade_demo = st.toggle(
         "🤖 Auto-Trading DEMO Capital.com (Sam otwiera i sam zamyka pozycje)",
-        value=False,
-        help="Gdy włączone, bot przy sygnale OTWARCIE sam wyśle zlecenie na konto DEMO Capital.com, a przy sygnale 💰 ZAMKNIJ ZYSK sam zamknie pozycję!"
+        value=False
     )
     trade_size = st.number_input("Wielkość pozycji DEMO (kontrakty):", min_value=0.1, max_value=50.0, value=1.0, step=0.5)
 
@@ -1066,15 +1048,14 @@ with st.sidebar:
     auto_refresh = st.toggle("🔄 Auto-odświeżanie na żywo", value=True)
     refresh_sec = st.slider("Co ile sekund:", 5, 30, 5)
 
-st.title("🎯 SP500 SIGNAL AI PRO — Auto-Zamykanie Zysku + Samo-Audyt + Zegar Rynków")
+st.title("🎯 SP500 SIGNAL AI PRO — Auto-Zamykanie Zysku + Samo-Audyt + Zegar Rynków (v6)")
 
-# 1. Zegar Rynków Światowych na górze ekranu
 mkt_sched = get_global_markets_schedule()
 m_c1, m_c2, m_c3, m_c4 = st.columns(4)
-m_c1.info(f"**🇺🇸 US500 CFD (Capital.com):**\n\n{mkt_sched['us500_cfd']}")
-m_c2.info(f"**🗽 Giełda USA (Wall Street NYSE):**\n\n{mkt_sched['nyse_cash']}")
-m_c3.info(f"**🇪🇺 Europa (Londyn / Frankfurt):**\n\n{mkt_sched['europe']}")
-m_c4.info(f"**🇯🇵 Azja (Tokio / Nikkei):**\n\n{mkt_sched['asia']}")
+m_c1.info(f"**🇺🇸 US500 CFD (Capital.com):**\\n\\n{mkt_sched['us500_cfd']}")
+m_c2.info(f"**🗽 Giełda USA (Wall Street NYSE):**\\n\\n{mkt_sched['nyse_cash']}")
+m_c3.info(f"**🇪🇺 Europa (Londyn / Frankfurt):**\\n\\n{mkt_sched['europe']}")
+m_c4.info(f"**🇯🇵 Azja (Tokio / Nikkei):**\\n\\n{mkt_sched['asia']}")
 
 client = CapitalComClient(
     saved.get("cap_key", ""),
@@ -1096,10 +1077,8 @@ if df_raw.empty or len(df_raw) < 25:
     st.error(f"Nie udało się pobrać świec: {source_status}")
     st.stop()
 
-# 2. Uruchomienie Samo-Audytu na dotychczasowym archiwum
 audit_info = run_self_learning_audit(st.session_state.get("persistent_archive", [])) if enable_self_learning else run_self_learning_audit([])
 
-# 3. Detekcja otwarć ORAZ automatycznych zamknięć w zysku
 df, htf_bias = detect_signals_and_waves(
     df_raw, df_htf, trade_style=trade_style, sensitivity=sensitivity, spread_pts=current_spread or 0.6, learned_params=audit_info
 )
@@ -1150,7 +1129,6 @@ spread_ok = (current_spread is None) or (current_spread <= max_spread)
 if "last_event_candle" not in st.session_state:
     st.session_state.last_event_candle = None
 
-# Obsługa alarmu dźwiękowego oraz opcjonalnego Auto-Tradingu na koncie DEMO Capital.com
 if st.session_state.last_event_candle != sig_time:
     if exit_sig == 1:
         if sound_enabled:
@@ -1194,7 +1172,7 @@ tab_main, tab_archive, tab_audit, tab_news = st.tabs([
 with tab_main:
     if exit_sig == 1:
         st.warning(
-            f"### 💰 AUTOMATYCZNE ZAMKNIĘCIE POZYCJI W ZYSKU: `{exit_label}`!\n"
+            f"### 💰 AUTOMATYCZNE ZAMKNIĘCIE POZYCJI W ZYSKU: `{exit_label}`!\\n"
             f"Świeca `{closed_candle_time.strftime('%H:%M')}` zamknęła falę i zabezpieczyła zysk po cenie `{closed_candle['ExitPrice']:.2f}`! "
             f"**Koleżanka zamyka pozycję z zyskiem i czeka na kolejny sygnał otwarcia.**"
         )
@@ -1202,7 +1180,7 @@ with tab_main:
         sl_p, tp1_p, tp2_p = closed_candle["SL"], closed_candle["TP1"], closed_candle["TP"]
         entry_p = closed_candle["EntryPrice"]
         st.success(
-            f"### 🟢 OTWARCIE POZYCJI LONG ({active_pattern}) — ŚWIECA `{closed_candle_time.strftime('%H:%M')}` ZAMKNIĘTA!\n"
+            f"### 🟢 OTWARCIE POZYCJI LONG ({active_pattern}) — ŚWIECA `{closed_candle_time.strftime('%H:%M')}` ZAMKNIĘTA!\\n"
             f"**Wchodzisz na otwarciu nowej świecy (`{live_candle_time.strftime('%H:%M')}`) po:** `{entry_p:.2f}` | "
             f"**Stop Loss:** `{sl_p:.2f}` | **TP1 (+15 pkt):** `{tp1_p:.2f}` | **TP2 (+30 pkt):** `{tp2_p:.2f}` "
             f"*(Bot sam pokaże znacznik `💰 ZAMKNIJ ZYSK`, gdy fala zacznie zawracać!)*"
@@ -1211,7 +1189,7 @@ with tab_main:
         sl_p, tp1_p, tp2_p = closed_candle["SL"], closed_candle["TP1"], closed_candle["TP"]
         entry_p = closed_candle["EntryPrice"]
         st.error(
-            f"### 🔴 OTWARCIE POZYCJI SHORT ({active_pattern}) — ŚWIECA `{closed_candle_time.strftime('%H:%M')}` ZAMKNIĘTA!\n"
+            f"### 🔴 OTWARCIE POZYCJI SHORT ({active_pattern}) — ŚWIECA `{closed_candle_time.strftime('%H:%M')}` ZAMKNIĘTA!\\n"
             f"**Wchodzisz na otwarciu nowej świecy (`{live_candle_time.strftime('%H:%M')}`) po:** `{entry_p:.2f}` | "
             f"**Stop Loss:** `{sl_p:.2f}` | **TP1 (-15 pkt):** `{tp1_p:.2f}` | **TP2 (-30 pkt ZJAZD):** `{tp2_p:.2f}` "
             f"*(Bot sam pokaże znacznik `💰 ZAMKNIJ ZYSK`, gdy zjazd zacznie zawracać!)*"
@@ -1314,164 +1292,12 @@ with tab_main:
     fig.update_layout(height=550, template="plotly_dark", xaxis_rangeslider_visible=False, margin=dict(l=15, r=85, t=35, b=15))
     st.plotly_chart(fig, use_container_width=True)
 
-with tab_archive:
-    st.subheader("🗄️ Trwałe Archiwum: Co bot postawił, kiedy zamknął i czy sygnał był DOBRY czy BŁĘDNY")
-    a_c1, a_c2, a_c3, a_c4 = st.columns(4)
-    a_c1.metric("Wszystkie sygnały", len(archive_df))
-    a_c2.metric("✅ DOBRE SYGNAŁY (Zysk)", f"{wins}", delta=f"{win_rate}% trafień")
-    a_c3.metric("❌ BŁĘDNE SYGNAŁY (Strata)", f"{losses}", delta_color="inverse")
-    a_c4.metric("Łączny bilans punktów", f"{total_pts:+.2f} pkt")
-
-    if not archive_df.empty:
-        for col_default, default_val in [("ocena_bota", "⏳ W TRAKCIE"), ("cena_wyjscia", 0.0)]:
-            if col_default not in archive_df.columns:
-                archive_df[col_default] = default_val
-
-        display_cols = [
-            "ocena_bota", "swieca_sygnalu", "moment_wejscia", "kierunek",
-            "formacja", "wejscie", "cena_wyjscia", "sl", "tp1", "tp2",
-            "max_ruch_pkt", "status", "pnl_pkt", "czas_rozliczenia"
-        ]
-        df_show = archive_df[display_cols].iloc[::-1].rename(columns={
-            "ocena_bota": "Czy dobrze obstawił?",
-            "swieca_sygnalu": "Świeca sygnałowa",
-            "moment_wejscia": "Otwarcie pozycji",
-            "kierunek": "Kierunek",
-            "formacja": "Typ sygnału",
-            "wejscie": "Cena Otwarcia",
-            "cena_wyjscia": "Cena Zamknięcia",
-            "sl": "Stop Loss",
-            "tp1": "TP1 (15 pkt)",
-            "tp2": "TP2 (30 pkt)",
-            "max_ruch_pkt": "Maks. zysk w trakcie (pkt)",
-            "status": "Jak zamknięto?",
-            "pnl_pkt": "Wynik (PnL pkt)",
-            "czas_rozliczenia": "Godz. zamknięcia"
-        })
-        st.dataframe(df_show, use_container_width=True)
-
-        b_col1, b_col2 = st.columns(2)
-        csv_bytes = df_show.to_csv(index=False).encode("utf-8-sig")
-        b_col1.download_button(
-            "📥 Pobierz Archiwum do Excela (CSV)",
-            data=csv_bytes,
-            file_name=f"archiwum_sp500_{now_pl.strftime('%Y%m%d_%H%M')}.csv",
-            mime="text/csv",
-            use_container_width=True
-        )
-        if b_col2.button("🗑️ Wyczyść Trwałe Archiwum (Reset od zera)", use_container_width=True):
-            st.session_state["persistent_archive"] = []
-            save_persistent_archive([])
-            st.rerun()
-    else:
-        st.info("Archiwum jest puste — poczekaj na pierwszy potwierdzony sygnał.")
-
-with tab_audit:
-    st.subheader("🧠 Moduł Samo-Audytu AI — Jak bot uczy się na własnych błędach")
-    st.markdown(
-        "Ten moduł przed każdym odświeżeniem wykresu **bada wszystkie zamknięte transakcje z Archiwum**, "
-        "oddziela **✅ Dobre sygnały** od **❌ Błędnych sygnałów** i automatycznie koryguje czułość bota:"
-    )
-    au1, au2, au3, au4 = st.columns(4)
-    au1.metric("Ocena Systemu", audit_info["overall_grade"])
-    au2.metric("Próg zmienności ATR", f"{audit_info['min_atr_mult']:.2f}x ATR")
-    au3.metric("Próg Auto-Zamykania Zysku", f"+{audit_info['dynamic_exit_min_profit']:.1f} pkt")
-    au4.metric("Limity RSI (LONG / SHORT)", f"<{audit_info['rsi_long_max']:.0f} / >{audit_info['rsi_short_min']:.0f}")
-
-    st.markdown("### 📋 Wnioski wyciągnięte przez bota z historii Twoich sygnałów:")
-    for lesson in audit_info["lessons"]:
-        st.markdown(f"- {lesson}")
-
-with tab_news:
-    st.subheader("🌍 Harmonogram Sesji Giełdowych (Czas Polski)")
-    st.markdown(
-        f"- **🇺🇸 Kontrakty US500 CFD (Capital.com):** Czynne całą dobę od poniedziałku `00:00` do piątku `23:00` (krótka przerwa techniczna codziennie między `22:00` a `23:00` czasu PL).\n"
-        f"- **🗽 Giełda Kasowa Wall Street (NYSE / S&P 500 Cash):** Otwiera się o **`{mkt_sched['ny_open_pl']} PL`** i zamyka o **`{mkt_sched['ny_close_pl']} PL`** — wtedy są największe ruchy po **20–40 punktów**!\n"
-        f"- **🇪🇺 Giełdy Europejskie (Londyn / Frankfurt):** Otwierają się o **`09:00 PL`** i zamykają o **`17:30 PL`**.\n"
-        f"- **🇯🇵 Sesja Azjatycka (Tokio):** Trwa w nocy od **`01:00 PL`** do **`07:00 PL`**."
-    )
-    st.markdown("---")
-    st.subheader("📡 Status kanałów informacyjnych RSS")
-    st.write(" | ".join(feed_status))
-    st.markdown("---")
-    st.subheader("📰 Pełne wiadomości i opisy artykułów")
-    for art in articles:
-        with st.container():
-            st.markdown(f"**{art['impact']} | [{art['source']}] {art['title']}** *(Publikacja: {art['pubDate']})*")
-            st.caption(f"📄 **Treść / Opis:** {art['description']}")
-
-st.markdown("---")
-st.subheader("🤖 Czat z Analitykiem AI (Widzi świece, Auto-Exit, Samo-Audyt i pełne wiadomości)")
-
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
-
-q1, q2, q3 = st.columns(3)
-quick_p = None
-if q1.button("🧠 Przeprowadź pełny audyt błędów bota z Archiwum", use_container_width=True):
-    quick_p = "Przeanalizuj tabelę z naszego trwałego archiwum sygnałów. Które sygnały były dobre, a które błędne i dlaczego? Kiedy najlepiej zamykać pozycję w zysku?"
-if q2.button("💰 Czy zamykać już bieżącą pozycję z zyskiem?", use_container_width=True):
-    quick_p = "Sprawdź ostatnią pozycję oraz ostatnie świece i EMA9. Czy warto już zamknąć zysk, czy trzymać dalej na 30 punktów?"
-if q3.button("🌍 Kiedy będzie największy ruch na rynku?", use_container_width=True):
-    quick_p = "Sprawdź obecny zegar rynków światowych, sesję USA oraz wiadomości makro. Kiedy spodziewać się największej fali na US500?"
-
-for msg in st.session_state.chat_history:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
-
-user_in = st.chat_input("Zadaj pytanie (np. 'oceń czy bot dobrze zamyka pozycje w zysku')...")
-final_prompt = quick_p or user_in
-
-if final_prompt:
-    st.session_state.chat_history.append({"role": "user", "content": final_prompt})
-    with st.chat_message("user"):
-        st.markdown(final_prompt)
-
-    candles_txt = df[["Open", "High", "Low", "Close", "EMA9", "EMA21", "EMA50", "RSI", "ATR", "Signal", "ExitSignal"]].tail(10).to_string()
-    news_full_txt = "\n".join([f"- [{a['impact']}] {a['title']} -> Opis: {a['description']}" for a in articles[:8]])
-    recent_arch_txt = archive_df.tail(10).to_string() if not archive_df.empty else "Brak"
-
-    system_prompt = f"""
-    Jesteś głównym analitykiem i audytorem bota S&P 500 (US500).
-    Aktualna cena: {current_price:.2f}, Spread: {current_spread} pkt, ATR: {current_atr:.2f}, RSI: {current_rsi:.1f}.
-    Sesja giełdy USA (NYSE): {mkt_sched['nyse_cash']}.
-    Statystyki z Trwałego Archiwum: {win_rate}% ({wins} dobrych sygnałów, {losses} błędnych sygnałów, {in_play} w grze, bilans: {total_pts:+.2f} pkt).
-    Wnioski Samo-Audytu: {audit_info['lessons']}.
-    Ostatnie 10 sygnałów z Trwałego Archiwum:
-    {recent_arch_txt}
-    Ostatnie 10 świec na wykresie:
-    {candles_txt}
-    Pełne nagłówki ORAZ OPISY artykułów makro/rynkowych:
-    {news_full_txt}
-    Odpowiadaj konkretnie po polsku:
-    1. Ocena sytuacji: OTWIERAĆ (LONG/SHORT), TRZYMAĆ czy ZAMYKAĆ ZYSK.
-    2. Audyt ostatnich dobrych i błędnych sygnałów z archiwum.
-    3. Konkretne poziomy cenowe.
-    """
-
-    with st.chat_message("assistant"):
-        openai_key = saved.get("openai_key", "")
-        if openai_key and OpenAI is not None:
-            try:
-                ai_client = OpenAI(api_key=openai_key)
-                resp = ai_client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[{"role": "system", "content": system_prompt}, *st.session_state.chat_history[-6:]],
-                    temperature=0.3
-                )
-                reply = resp.choices[0].message.content
-            except Exception as e:
-                reply = f"Błąd OpenAI API: {e}"
-        else:
-            reply = (
-                f"**[Lokalny Raport Samo-Audytu & Rynków]**\n"
-                f"- **Bilans Archiwum:** `{wins}` Dobrych sygnałów vs `{losses}` Błędnych sygnałów (`{win_rate}%`, łącznie `{total_pts:+.2f} pkt`).\n"
-                f"- **Wnioski Samo-Audytu:** {' '.join(audit_info['lessons'])}\n"
-                f"- **Status Giełdy USA (Wall Street):** {mkt_sched['nyse_cash']}"
-            )
-        st.markdown(reply)
-        st.session_state.chat_history.append({"role": "assistant", "content": reply})
-
 if auto_refresh:
     time.sleep(refresh_sec)
     st.rerun()
+'''
+
+ast.parse(v6_code)
+with open("app_v6_backup.py", "w", encoding="utf-8") as f:
+    f.write(v6_code)
+print("app_v6_backup.py written and verified successfully.")
