@@ -4,7 +4,6 @@ import html
 import json
 import time
 import datetime
-from zoneinfo import ZoneInfo
 import requests
 import streamlit as st
 import pandas as pd
@@ -12,6 +11,14 @@ import numpy as np
 import plotly.graph_objects as go
 import streamlit.components.v1 as components
 import xml.etree.ElementTree as ET
+
+try:
+    from zoneinfo import ZoneInfo
+    PL_TZ = ZoneInfo("Europe/Warsaw")
+    NY_TZ = ZoneInfo("America/New_York")
+except Exception:
+    PL_TZ = datetime.timezone(datetime.timedelta(hours=1))
+    NY_TZ = datetime.timezone(datetime.timedelta(hours=-4))
 
 try:
     from openai import OpenAI
@@ -23,17 +30,14 @@ try:
 except ImportError:
     yf = None
 
-PL_TZ = ZoneInfo("Europe/Warsaw")
-NY_TZ = ZoneInfo("America/New_York")
-UTC_TZ = ZoneInfo("UTC")
-
 st.set_page_config(
-    page_title="SP500 SIGNAL AI PRO — Master Edition v4 (Fala 30 PKT + Pełny Audyt)",
+    page_title="SP500 SIGNAL AI PRO — Wersja PC + Trwałe Archiwum",
     page_icon="⚡",
     layout="wide"
 )
 
 KEYS_CACHE_FILE = ".saved_api_keys.json"
+ARCHIVE_FILE = "archiwum_sygnalow_sp500.json"
 
 def load_cached_keys():
     data = {
@@ -83,7 +87,7 @@ def save_cached_keys(is_demo, cap_key, cap_id, cap_pass, openai_key, remember_on
     if remember_on_disk:
         try:
             with open(KEYS_CACHE_FILE, "w", encoding="utf-8") as f:
-                json.dump(payload, f)
+                json.dump(payload, f, indent=2)
         except Exception:
             pass
     else:
@@ -95,6 +99,27 @@ def save_cached_keys(is_demo, cap_key, cap_id, cap_pass, openai_key, remember_on
 
 if "saved_keys" not in st.session_state:
     st.session_state["saved_keys"] = load_cached_keys()
+
+def load_persistent_archive():
+    if os.path.exists(ARCHIVE_FILE):
+        try:
+            with open(ARCHIVE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    return data
+        except Exception:
+            pass
+    return []
+
+def save_persistent_archive(archive_list):
+    try:
+        with open(ARCHIVE_FILE, "w", encoding="utf-8") as f:
+            json.dump(archive_list, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+if "persistent_archive" not in st.session_state:
+    st.session_state["persistent_archive"] = load_persistent_archive()
 
 def trigger_beep_alarm(signal_type="LONG"):
     freq1 = 880 if signal_type == "LONG" else 520
@@ -271,7 +296,7 @@ class CapitalComClient:
         except Exception as e:
             return None, None, f"❌ Błąd sieci Capital.com: {e}"
 
-    def fetch_candles(self, epic="US500", resolution="MINUTE", max_bars=180):
+    def fetch_candles(self, epic="US500", resolution="MINUTE", max_bars=200):
         cst, token, msg = self.get_session_tokens(force_new=False)
         if not cst or not token:
             return pd.DataFrame(), None, msg
@@ -334,7 +359,7 @@ def fetch_fallback_data(resolution="MINUTE"):
         if idx.tz is None:
             idx = idx.tz_localize(NY_TZ)
         df.index = idx.tz_convert(PL_TZ).tz_localize(None)
-        return df.tail(180), 0.6, "🟡 TRYB AWARYJNY: Yahoo Finance (Sprawdź klucze Capital.com)"
+        return df.tail(200), 0.6, "🟡 TRYB AWARYJNY: Yahoo Finance (Sprawdź klucze Capital.com)"
     except Exception as e:
         return pd.DataFrame(), 0.6, f"Błąd fallbacku: {e}"
 
@@ -356,7 +381,6 @@ def detect_signals_and_waves(df_main, df_htf=None, trade_style="🔥 FALA 30 PKT
     tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
     df["ATR"] = tr.rolling(14).mean().bfill()
 
-    # Punkt-w-czasie trend wyższego interwału (BEZ PODGLĄDANIA PRZYSZŁOŚCI!)
     if df_htf is not None and not df_htf.empty and len(df_htf) > 15:
         htf = df_htf.copy().sort_index()
         htf["HTF_EMA9"] = htf["Close"].ewm(span=9, adjust=False).mean()
@@ -379,6 +403,7 @@ def detect_signals_and_waves(df_main, df_htf=None, trade_style="🔥 FALA 30 PKT
     df["Pattern"] = ""
     df["ArrowPrice"] = np.nan
     df["EntryPrice"] = np.nan
+    df["EntryTime"] = ""
     df["SL"] = np.nan
     df["TP1"] = np.nan
     df["TP"] = np.nan
@@ -388,7 +413,8 @@ def detect_signals_and_waves(df_main, df_htf=None, trade_style="🔥 FALA 30 PKT
     min_cooldown = 6 if is_wave_30 else (2 if sensitivity == "Wysoka (Więcej strzałek)" else 4)
     last_sig_idx = -20
 
-    # Pętla analizuje wyłącznie ZAMKNIĘTE świece (do len(df) - 1)
+    # TWARDA BLOKADA: Pętla kończy się na len(df) - 1!
+    # Ostatnia świeca (indeks len(df)-1) NIGDY nie jest sprawdzana, bo jeszcze się rysuje!
     for i in range(5, len(df) - 1):
         if (i - last_sig_idx) < min_cooldown:
             continue
@@ -406,7 +432,6 @@ def detect_signals_and_waves(df_main, df_htf=None, trade_style="🔥 FALA 30 PKT
         upper_wick = h - max(o, c)
         lower_wick = min(o, c) - l
 
-        # Filtr Anty-Konsolidacyjny
         ema_gap = abs(ema9 - ema21)
         ema_slope = ema9 - ema9_prev3
         is_chop = (ema_gap < atr * 0.12) and (abs(ema_slope) < atr * 0.18)
@@ -435,6 +460,7 @@ def detect_signals_and_waves(df_main, df_htf=None, trade_style="🔥 FALA 30 PKT
             trend_down = trend_down and (bar_htf_bias == -1 or rsi > 70)
 
         next_open = float(df["Open"].iloc[i + 1])
+        next_time_str = str(df.index[i + 1].strftime("%Y-%m-%d %H:%M:%S"))
         half_spread = float(spread_pts or 0.6) / 2.0
 
         if (bull_pinbar or bull_engulfing or bull_impulse or bull_wave_break) and trend_up and rsi < 70:
@@ -442,6 +468,7 @@ def detect_signals_and_waves(df_main, df_htf=None, trade_style="🔥 FALA 30 PKT
             df.iloc[i, df.columns.get_loc("ArrowPrice")] = l - (atr * 0.40)
             real_entry = round(next_open + half_spread, 2)
             df.iloc[i, df.columns.get_loc("EntryPrice")] = real_entry
+            df.iloc[i, df.columns.get_loc("EntryTime")] = next_time_str
 
             if is_wave_30:
                 swing_low = float(df["Low"].iloc[max(0, i - 5):i + 1].min())
@@ -462,6 +489,7 @@ def detect_signals_and_waves(df_main, df_htf=None, trade_style="🔥 FALA 30 PKT
             df.iloc[i, df.columns.get_loc("ArrowPrice")] = h + (atr * 0.40)
             real_entry = round(next_open - half_spread, 2)
             df.iloc[i, df.columns.get_loc("EntryPrice")] = real_entry
+            df.iloc[i, df.columns.get_loc("EntryTime")] = next_time_str
 
             if is_wave_30:
                 swing_high = float(df["High"].iloc[max(0, i - 5):i + 1].max())
@@ -479,113 +507,157 @@ def detect_signals_and_waves(df_main, df_htf=None, trade_style="🔥 FALA 30 PKT
 
     return df, current_htf_bias
 
-def evaluate_signals_history(df):
-    results = []
+def sync_and_evaluate_persistent_archive(df, resolution):
+    """
+    Zapisuje każdy potwierdzony (po zamknięciu świecy!) sygnał do trwałego pliku na dysku
+    oraz aktualizuje wyniki (TP1 / TP2 / SL) wszystkich historycznych sygnałów.
+    """
+    archive = st.session_state.get("persistent_archive", [])
+    existing_ids = {item.get("id") for item in archive}
+    now_clock = datetime.datetime.now(PL_TZ).strftime("%Y-%m-%d %H:%M:%S")
+
+    # 1. Dodaj nowe sygnały wyłącznie z ZAMKNIĘTYCH świec (indeksy od 0 do len(df)-2)
     for i in range(len(df) - 1):
         sig = int(df["Signal"].iloc[i])
         if sig == 0:
             continue
-        sig_time = str(df.index[i].strftime("%H:%M"))
-        entry_time = str(df.index[i + 1].strftime("%H:%M"))
-        entry = float(df["EntryPrice"].iloc[i])
-        sl = float(df["SL"].iloc[i])
-        tp1 = float(df["TP1"].iloc[i])
-        tp = float(df["TP"].iloc[i])
-        pat = df["Pattern"].iloc[i]
+        candle_ts = str(df.index[i].strftime("%Y-%m-%d %H:%M:%S"))
+        entry_ts = str(df.index[i + 1].strftime("%Y-%m-%d %H:%M:%S"))
+        sig_id = f"{resolution}_{candle_ts}"
 
-        status = "⏳ W GRZE (Czeka na ruch)"
-        pnl = 0.0
-        max_fav = 0.0
-        hit_tp1 = False
+        if sig_id not in existing_ids:
+            archive.append({
+                "id": sig_id,
+                "interwal": resolution,
+                "swieca_sygnalu": candle_ts,
+                "moment_wejscia": entry_ts,
+                "zapisano_zegar": now_clock,
+                "potwierdzenie": "✅ Po zamknięciu świecy",
+                "kierunek": "🟢 LONG" if sig == 1 else "🔴 SHORT",
+                "sig_num": sig,
+                "formacja": str(df["Pattern"].iloc[i]),
+                "wejscie": float(df["EntryPrice"].iloc[i]),
+                "sl": float(df["SL"].iloc[i]),
+                "tp1": float(df["TP1"].iloc[i]),
+                "tp2": float(df["TP"].iloc[i]),
+                "max_ruch_pkt": 0.0,
+                "hit_tp1": False,
+                "status": "⏳ W GRZE",
+                "pnl_pkt": 0.0,
+                "czas_rozliczenia": "-"
+            })
+            existing_ids.add(sig_id)
 
-        for j in range(i + 1, len(df)):
-            hj = float(df["High"].iloc[j])
-            lj = float(df["Low"].iloc[j])
+    # 2. Aktualizuj statusy otwartych pozycji na podstawie świec po momencie wejścia
+    for item in archive:
+        if item.get("interwal") != resolution:
+            continue
+        if item.get("status", "").startswith("✅") or item.get("status", "").startswith("❌") or item.get("status", "").startswith("🟢"):
+            continue
+
+        entry_dt = pd.to_datetime(item["moment_wejscia"])
+        sub_df = df[df.index >= entry_dt]
+        if sub_df.empty:
+            continue
+
+        sig = int(item["sig_num"])
+        entry = float(item["wejscie"])
+        sl = float(item["sl"])
+        tp1 = float(item["tp1"])
+        tp2 = float(item["tp2"])
+        max_fav = float(item.get("max_ruch_pkt", 0.0))
+        hit_tp1 = bool(item.get("hit_tp1", False))
+
+        for ts_idx, row in sub_df.iterrows():
+            hj = float(row["High"])
+            lj = float(row["Low"])
+            ts_str = str(ts_idx.strftime("%H:%M:%S"))
+
             if sig == 1:
-                fav = hj - entry
+                fav = round(hj - entry, 2)
                 if fav > max_fav:
                     max_fav = fav
                 if hj >= tp1:
                     hit_tp1 = True
-                if lj <= sl and hj >= tp:
-                    status = "❌ STOP LOSS (Konflikt w 1 świecy)"
-                    pnl = round(sl - entry, 2)
+                if lj <= sl and hj >= tp2:
+                    item["status"] = "❌ STOP LOSS (Konflikt w 1 św.)"
+                    item["pnl_pkt"] = round(sl - entry, 2)
+                    item["czas_rozliczenia"] = ts_str
                     break
                 elif lj <= sl:
                     if hit_tp1:
-                        status = "🟢 +15 PKT (Zabezpieczone TP1)"
-                        pnl = round(tp1 - entry, 2)
+                        item["status"] = "🟢 +15 PKT (Zabezpieczony TP1)"
+                        item["pnl_pkt"] = round(tp1 - entry, 2)
                     else:
-                        status = "❌ STOP LOSS"
-                        pnl = round(sl - entry, 2)
+                        item["status"] = "❌ STOP LOSS"
+                        item["pnl_pkt"] = round(sl - entry, 2)
+                    item["czas_rozliczenia"] = ts_str
                     break
-                elif hj >= tp:
-                    status = "✅ PEŁNE TP (+30 PKT!)" if abs(tp - entry) >= 25 else "✅ WESZŁO (TP)"
-                    pnl = round(tp - entry, 2)
+                elif hj >= tp2:
+                    item["status"] = "✅ PEŁNE TP2 (+30 PKT!)" if abs(tp2 - entry) >= 25 else "✅ WESZŁO (TP)"
+                    item["pnl_pkt"] = round(tp2 - entry, 2)
+                    item["czas_rozliczenia"] = ts_str
                     break
             else:
-                fav = entry - lj
+                fav = round(entry - lj, 2)
                 if fav > max_fav:
                     max_fav = fav
                 if lj <= tp1:
                     hit_tp1 = True
-                if hj >= sl and lj <= tp:
-                    status = "❌ STOP LOSS (Konflikt w 1 świecy)"
-                    pnl = round(entry - sl, 2)
+                if hj >= sl and lj <= tp2:
+                    item["status"] = "❌ STOP LOSS (Konflikt w 1 św.)"
+                    item["pnl_pkt"] = round(entry - sl, 2)
+                    item["czas_rozliczenia"] = ts_str
                     break
                 elif hj >= sl:
                     if hit_tp1:
-                        status = "🟢 +15 PKT (Zabezpieczone TP1)"
-                        pnl = round(entry - tp1, 2)
+                        item["status"] = "🟢 +15 PKT (Zabezpieczony TP1)"
+                        item["pnl_pkt"] = round(entry - tp1, 2)
                     else:
-                        status = "❌ STOP LOSS"
-                        pnl = round(entry - sl, 2)
+                        item["status"] = "❌ STOP LOSS"
+                        item["pnl_pkt"] = round(entry - sl, 2)
+                    item["czas_rozliczenia"] = ts_str
                     break
-                elif lj <= tp:
-                    status = "✅ PEŁNE TP (-30 PKT ZJAZD!)" if abs(entry - tp) >= 25 else "✅ WESZŁO (TP)"
-                    pnl = round(entry - tp, 2)
+                elif lj <= tp2:
+                    item["status"] = "✅ PEŁNE TP2 (-30 PKT ZJAZD!)" if abs(entry - tp2) >= 25 else "✅ WESZŁO (TP)"
+                    item["pnl_pkt"] = round(entry - tp2, 2)
+                    item["czas_rozliczenia"] = ts_str
                     break
 
-        if status.startswith("⏳"):
+        item["max_ruch_pkt"] = max_fav
+        item["hit_tp1"] = hit_tp1
+
+        if item["status"].startswith("⏳"):
             cur_c = float(df["Close"].iloc[-1])
-            pnl = round((cur_c - entry) if sig == 1 else (entry - cur_c), 2)
+            item["pnl_pkt"] = round((cur_c - entry) if sig == 1 else (entry - cur_c), 2)
+            if hit_tp1:
+                item["status"] = "⏳ W GRZE (Po TP1 +15 pkt!)"
 
-        results.append({
-            "Świeca sygnału": sig_time,
-            "Wejście o godz.": entry_time,
-            "Kierunek": "🟢 LONG" if sig == 1 else "🔴 SHORT",
-            "Typ Sygnału": pat,
-            "Wejście (ze spreadem)": round(entry, 2),
-            "Stop Loss": sl,
-            "Cel 1 (TP1)": tp1,
-            "Cel Główny (TP2)": tp,
-            "Maks. ruch w dobrą stronę": f"+{max_fav:.1f} pkt",
-            "Wynik": status,
-            "Punkty (PnL)": pnl
-        })
-    return pd.DataFrame(results)
+    st.session_state["persistent_archive"] = archive
+    save_persistent_archive(archive)
+    return pd.DataFrame(archive)
 
 saved = st.session_state["saved_keys"]
 
 with st.sidebar:
-    st.title("⚡ Master Edition v4")
-    st.caption("Fala 30 PKT • Pełne Newsy • Audyt v3+v4")
+    st.title("⚡ Master Edition PC (v5)")
+    st.caption("Trwałe Archiwum • Blokada Świecy Na Żywo • Fala 30 PKT")
 
-    with st.expander("🔑 Klucze API (Laptop)", expanded=not bool(saved.get("cap_key"))):
+    with st.expander("🔑 Klucze API (Zapis na dysku PC)", expanded=not bool(saved.get("cap_key"))):
         with st.form("api_login_form", clear_on_submit=False):
             is_demo_in = st.checkbox("Konto DEMO Capital.com", value=saved.get("is_demo", True))
             cap_key_in = st.text_input("Capital API Key:", value=saved.get("cap_key", ""), type="password")
             cap_id_in = st.text_input("Capital Login (Email):", value=saved.get("cap_id", ""))
             cap_pass_in = st.text_input("Capital Hasło API:", value=saved.get("cap_pass", ""), type="password")
             openai_key_in = st.text_input("OpenAI API Key (do czatu):", value=saved.get("openai_key", ""), type="password")
-            remember_in = st.checkbox("💾 Zapamiętaj klucze na tym laptopie", value=saved.get("remember_on_disk", True))
+            remember_in = st.checkbox("💾 Zapamiętaj klucze na dysku PC", value=saved.get("remember_on_disk", True))
 
             login_submitted = st.form_submit_button("🔐 ZALOGUJ I ZAPISZ", use_container_width=True, type="primary")
 
         if login_submitted:
             st.session_state.pop("cap_session_cache", None)
             save_cached_keys(is_demo_in, cap_key_in, cap_id_in, cap_pass_in, openai_key_in, remember_on_disk=remember_in)
-            st.success("Zapisano klucze! Odświeżam połączenie...")
+            st.success("Zapisano klucze! Odświeżam...")
             st.rerun()
 
         if saved.get("cap_key") and saved.get("cap_id"):
@@ -603,22 +675,16 @@ with st.sidebar:
             "🔥 FALA 30 PKT (Potrzymaj pozycję — Cel 15 / 30 pkt)",
             "⚡ Szybki Scalp (Krótkie ruchy 2–4 pkt wg ATR)"
         ],
-        index=0,
-        help="W trybie FALA 30 PKT bot szuka mocnych ruchów i rysuje na wykresie poziomy +15 pkt (TP1) oraz +30 pkt (TP2)."
+        index=0
     )
-    resolution = st.selectbox(
-        "Interwał wykresu:",
-        ["MINUTE", "MINUTE_5", "MINUTE_15"],
-        index=0,
-        help="Do łapania fali 30 pkt świetny jest MINUTE (widać wczesny start) lub MINUTE_5 (mniej szumu)."
-    )
+    resolution = st.selectbox("Interwał wykresu:", ["MINUTE", "MINUTE_5", "MINUTE_15"], index=0)
     sensitivity = st.radio(
         "Filtr strzałek:",
         ["Tylko Pewniaki (Filtr Konsolidacji)", "Standard (Z filtrem płaskich EMA)", "Wysoka (Więcej strzałek)"],
         index=0
     )
     max_spread = st.slider("Maks. Spread (pkt):", 0.2, 2.5, 0.9, 0.1)
-    block_macro_window = st.checkbox("🛑 Ostrzegaj w oknach publikacji danych USA (08:30/10:00/14:00 ET)", value=True)
+    block_macro_window = st.checkbox("🛑 Ostrzegaj w oknach publikacji danych USA", value=True)
 
     st.subheader("2. Dźwięk i Odświeżanie")
     sound_enabled = st.toggle("🔊 Piszczenie przy nowym sygnale", value=True)
@@ -629,7 +695,7 @@ with st.sidebar:
     auto_refresh = st.toggle("🔄 Auto-odświeżanie na żywo", value=True)
     refresh_sec = st.slider("Co ile sekund:", 5, 30, 5)
 
-st.title("🎯 SP500 SIGNAL AI PRO — Łowca Fal 30 PKT & Pełna Analiza Newsów")
+st.title("🎯 SP500 SIGNAL AI PRO — Wersja PC + Trwałe Archiwum Sygnałów")
 
 client = CapitalComClient(
     saved.get("cap_key", ""),
@@ -637,7 +703,7 @@ client = CapitalComClient(
     saved.get("cap_pass", ""),
     is_demo=saved.get("is_demo", True)
 )
-df_raw, current_spread, source_status = client.fetch_candles(epic="US500", resolution=resolution, max_bars=180)
+df_raw, current_spread, source_status = client.fetch_candles(epic="US500", resolution=resolution, max_bars=200)
 
 htf_map = {"MINUTE": "MINUTE_5", "MINUTE_5": "MINUTE_15", "MINUTE_15": "HOUR"}
 htf_res = htf_map.get(resolution, "MINUTE_15")
@@ -654,15 +720,22 @@ if df_raw.empty or len(df_raw) < 25:
 df, htf_bias = detect_signals_and_waves(
     df_raw, df_htf, trade_style=trade_style, sensitivity=sensitivity, spread_pts=current_spread or 0.6
 )
-eval_df = evaluate_signals_history(df)
+archive_df = sync_and_evaluate_persistent_archive(df, resolution)
 articles, feed_status, news_sentiment_str, news_bias_code, bull_sc, bear_sc = fetch_full_macro_news_and_sentiment()
 in_macro_window, macro_window_label = check_us_macro_window()
 
+# Podział na: OSTATNIĄ ZAMKNIĘTĄ ŚWIECĘ (iloc[-2]) oraz RYSUJĄCĄ SIĘ ŚWIECĘ NA ŻYWO (iloc[-1])
 closed_candle = df.iloc[-2]
 live_candle = df.iloc[-1]
+closed_candle_time = df.index[-2]
+live_candle_time = df.index[-1]
+
 current_price = float(live_candle["Close"])
 current_atr = float(closed_candle["ATR"])
 current_rsi = float(closed_candle["RSI"])
+
+now_pl = datetime.datetime.now(PL_TZ)
+sec_left_in_min = 60 - now_pl.second
 
 recent_window = df.tail(60)
 recent_high = float(recent_window["High"].max())
@@ -670,19 +743,26 @@ recent_low = float(recent_window["Low"].min())
 drop_from_high = round(recent_high - current_price, 1)
 rally_from_low = round(current_price - recent_low, 1)
 
+# Pasek dowodu blokady świecy w trakcie rysowania
+st.caption(
+    f"🔒 **BLOKADA ŚWIECY W TRAKCIE RYSOWANIA AKTYWNA:** Świeca `{live_candle_time.strftime('%H:%M')}` dopiero się tworzy "
+    f"(do zamknięcia minuty zostało ok. `{sec_left_in_min} sek.`). Bot **NIGDY** nie stawia strzałki na tworzącej się świecy — "
+    f"ocenia wyłącznie ukończoną świecę `{closed_candle_time.strftime('%H:%M')}`!"
+)
+
 if news_bias_code == -1:
-    st.error(f"📰 **SENTYMENT WIADOMOŚCI (Pełne opisy RSS):** {news_sentiment_str} *(Wynik analizy treści: {bear_sc} negatywnych vs {bull_sc} pozytywnych)*")
+    st.error(f"📰 **SENTYMENT WIADOMOŚCI (Pełne opisy RSS):** {news_sentiment_str} *(Negatywne: {bear_sc} vs Pozytywne: {bull_sc})*")
 elif news_bias_code == 1:
-    st.success(f"📰 **SENTYMENT WIADOMOŚCI (Pełne opisy RSS):** {news_sentiment_str} *(Wynik analizy treści: {bull_sc} pozytywnych vs {bear_sc} negatywnych)*")
+    st.success(f"📰 **SENTYMENT WIADOMOŚCI (Pełne opisy RSS):** {news_sentiment_str} *(Pozytywne: {bull_sc} vs Negatywne: {bear_sc})*")
 else:
-    st.info(f"📰 **SENTYMENT WIADOMOŚCI (Pełne opisy RSS):** {news_sentiment_str} *(Wynik analizy treści: {bull_sc} pozytywnych vs {bear_sc} negatywnych)*")
+    st.info(f"📰 **SENTYMENT WIADOMOŚCI (Pełne opisy RSS):** {news_sentiment_str} *(Pozytywne: {bull_sc} vs Negatywne: {bear_sc})*")
 
 if block_macro_window and in_macro_window:
-    st.warning(f"⚠️ **UWAGA — OKNO DANYCH USA:** Trwa `{macro_window_label}`! Możliwe gwałtowne szarpnięcia o 20–40 punktów w obie strony.")
+    st.warning(f"⚠️ **UWAGA — OKNO DANYCH USA:** Trwa `{macro_window_label}`! Możliwe gwałtowne szarpnięcia o 20–40 punktów.")
 
 active_sig = int(closed_candle["Signal"])
 active_pattern = closed_candle["Pattern"]
-sig_time = str(df.index[-2])
+sig_time = str(closed_candle_time)
 spread_ok = (current_spread is None) or (current_spread <= max_spread)
 
 live_invalidated = False
@@ -700,54 +780,61 @@ if active_sig != 0 and spread_ok and not live_invalidated:
             trigger_beep_alarm("LONG" if active_sig == 1 else "SHORT")
         st.session_state.last_beep_candle = sig_time
 
-wins = len(eval_df[eval_df["Wynik"].str.startswith("✅") | eval_df["Wynik"].str.startswith("🟢")]) if not eval_df.empty else 0
-losses = len(eval_df[eval_df["Wynik"].str.startswith("❌")]) if not eval_df.empty else 0
-total_closed = wins + losses
-win_rate = round((wins / total_closed) * 100, 1) if total_closed > 0 else 0.0
-total_pts = round(eval_df["Punkty (PnL)"].sum(), 2) if not eval_df.empty else 0.0
+# Statystyki z trwałego archiwum
+if not archive_df.empty:
+    wins = len(archive_df[archive_df["status"].str.startswith("✅") | archive_df["status"].str.startswith("🟢")])
+    losses = len(archive_df[archive_df["status"].str.startswith("❌")])
+    in_play = len(archive_df[archive_df["status"].str.startswith("⏳")])
+    total_closed = wins + losses
+    win_rate = round((wins / total_closed) * 100, 1) if total_closed > 0 else 0.0
+    total_pts = round(archive_df["pnl_pkt"].sum(), 2)
+else:
+    wins, losses, in_play, total_closed, win_rate, total_pts = 0, 0, 0, 0, 0.0, 0.0
 
-tab_main, tab_stats, tab_news = st.tabs([
-    "📊 Wykres & Cel 30 Punktów",
-    f"🏆 Tabela Wyników ({wins}W / {losses}L — {win_rate}%)",
+tab_main, tab_archive, tab_news = st.tabs([
+    "📊 Wykres & Sygnały (Po Zamknięciu Świecy)",
+    f"🗄️ Trwałe Archiwum Sygnałów ({wins}W / {losses}L / {in_play} W grze — {win_rate}%)",
     f"📰 Pełne Wiadomości & Status Źródeł ({len(articles)})"
 ])
 
 with tab_main:
     if active_sig == 1 and spread_ok and not live_invalidated:
         sl_p, tp1_p, tp2_p = closed_candle["SL"], closed_candle["TP1"], closed_candle["TP"]
+        entry_p = closed_candle["EntryPrice"]
         st.success(
-            f"### 🟢 SYGNAŁ NA WZROST: {active_pattern} — WCHODZISZ TERAZ W LONG!\n"
-            f"Świeca `{df.index[-2].strftime('%H:%M')}` zamknęła się sygnałem! **Wchodzisz po:** `{current_price:.2f}` | "
-            f"**Stop Loss:** `{sl_p:.2f}` | **Przystanek TP1 (+15 pkt):** `{tp1_p:.2f}` | **Cel Główny TP2 (+30 pkt):** `{tp2_p:.2f}`"
+            f"### 🟢 POTWIERDZONY SYGNAŁ LONG ({active_pattern}) — PO ZAMKNIĘCIU ŚWIECY `{closed_candle_time.strftime('%H:%M')}`!\n"
+            f"✅ Świeca `{closed_candle_time.strftime('%H:%M')}` zamknęła się! **Wchodzisz na otwarciu nowej świecy (`{live_candle_time.strftime('%H:%M')}`) po:** `{entry_p:.2f}` (Bieżąca cena: `{current_price:.2f}`) | "
+            f"**Stop Loss:** `{sl_p:.2f}` | **Cel TP1 (+15 pkt):** `{tp1_p:.2f}` | **Cel Główny TP2 (+30 pkt):** `{tp2_p:.2f}`"
         )
     elif active_sig == -1 and spread_ok and not live_invalidated:
         sl_p, tp1_p, tp2_p = closed_candle["SL"], closed_candle["TP1"], closed_candle["TP"]
+        entry_p = closed_candle["EntryPrice"]
         st.error(
-            f"### 🔴 SYGNAŁ NA SPADEK: {active_pattern} — WCHODZISZ TERAZ W SHORT!\n"
-            f"Świeca `{df.index[-2].strftime('%H:%M')}` zamknęła się sygnałem! **Wchodzisz po:** `{current_price:.2f}` | "
-            f"**Stop Loss:** `{sl_p:.2f}` | **Przystanek TP1 (-15 pkt):** `{tp1_p:.2f}` | **Cel Główny TP2 (-30 pkt ZJAZD):** `{tp2_p:.2f}`"
+            f"### 🔴 POTWIERDZONY SYGNAŁ SHORT ({active_pattern}) — PO ZAMKNIĘCIU ŚWIECY `{closed_candle_time.strftime('%H:%M')}`!\n"
+            f"✅ Świeca `{closed_candle_time.strftime('%H:%M')}` zamknęła się! **Wchodzisz na otwarciu nowej świecy (`{live_candle_time.strftime('%H:%M')}`) po:** `{entry_p:.2f}` (Bieżąca cena: `{current_price:.2f}`) | "
+            f"**Stop Loss:** `{sl_p:.2f}` | **Cel TP1 (-15 pkt):** `{tp1_p:.2f}` | **Cel Główny TP2 (-30 pkt ZJAZD):** `{tp2_p:.2f}`"
         )
     else:
-        if not eval_df.empty:
-            last_row = eval_df.iloc[-1]
+        if not archive_df.empty:
+            last_row = archive_df.iloc[-1]
             st.info(
-                f"⏱️ **STATUS OSTATNIEJ POZYCJI (ze świecy `{last_row['Świeca sygnału']}`):** "
-                f"**{last_row['Kierunek']}** od ceny `{last_row['Wejście (ze spreadem)']}` ➔ "
-                f"Cel TP1: `{last_row['Cel 1 (TP1)']}` | **Cel Główny (30 pkt): `{last_row['Cel Główny (TP2)']}`** ➔ "
-                f"Status: **{last_row['Wynik']}** (Bieżący wynik: `{last_row['Punkty (PnL)']:+.2f} pkt`, Maks. ruch: `{last_row['Maks. ruch w dobrą stronę']}`)"
+                f"⏱️ **OSTATNI ZAPISANY SYGNAŁ W ARCHIWUM (Świeca zamknięta `{last_row['swieca_sygnalu'][-8:-3]}`, wejście o `{last_row['moment_wejscia'][-8:-3]}`):** "
+                f"**{last_row['kierunek']}** od ceny `{last_row['wejscie']:.2f}` ➔ "
+                f"TP1: `{last_row['tp1']:.2f}` | **TP2 (30 pkt): `{last_row['tp2']:.2f}`** | SL: `{last_row['sl']:.2f}` ➔ "
+                f"Status: **{last_row['status']}** (`{last_row['pnl_pkt']:+.2f} pkt`, Maks. ruch: `+{last_row['max_ruch_pkt']:.1f} pkt`)"
             )
         else:
-            st.info("⚪ **CZEKAJ NA SYGNAŁ FALI** — Rynek w konsolidacji, filtr chroni przed wejściem w płaski szum.")
+            st.info("⚪ **CZEKAJ NA ZAMKNIĘCIE ŚWIECY Z SYGNAŁEM** — Rynek w konsolidacji.")
 
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     c1.metric("Cena US500", f"{current_price:.2f}")
-    c2.metric("Zjazd od szczytu (60 św.)", f"-{drop_from_high:.1f} pkt", delta=f"Brakuje {max(0.0, 30.0 - drop_from_high):.1f} pkt do -30" if drop_from_high < 30 else "🔥 ZJAZD 30 PKT ZROBIONY!")
-    c3.metric("Odbicie od dołka (60 św.)", f"+{rally_from_low:.1f} pkt", delta=f"Brakuje {max(0.0, 30.0 - rally_from_low):.1f} pkt do +30" if rally_from_low < 30 else "🔥 RAKIETA 30 PKT ZROBIONA!")
+    c2.metric("Zjazd od szczytu (60 św.)", f"-{drop_from_high:.1f} pkt", delta=f"Do -30 pkt brakuje: {max(0.0, 30.0 - drop_from_high):.1f}")
+    c3.metric("Odbicie od dołka (60 św.)", f"+{rally_from_low:.1f} pkt", delta=f"Do +30 pkt brakuje: {max(0.0, 30.0 - rally_from_low):.1f}")
     c4.metric("Spread / ATR", f"{current_spread or 0.0:.2f} / {current_atr:.2f}")
     c5.metric(f"Trend wyższy ({htf_res})", "🟢 WZROSTOWY" if htf_bias > 0 else ("🔴 SPADKOWY" if htf_bias < 0 else "⚪ PŁASKI"))
-    c6.metric("Skuteczność (Wykres)", f"{win_rate}% ({wins}W/{losses}L)", delta=f"{total_pts:+.2f} pkt")
+    c6.metric("Bilans Archiwum", f"{win_rate}% ({wins}W/{losses}L)", delta=f"{total_pts:+.2f} pkt")
 
-    st.caption(f"📡 Źródło danych: **{source_status}** | 🕒 Czas lokalny PL: `{datetime.datetime.now(PL_TZ).strftime('%H:%M:%S')}` | 🗽 {macro_window_label}")
+    st.caption(f"📡 Źródło: **{source_status}** | 🕒 Zegar PC: `{now_pl.strftime('%H:%M:%S')}` | 🗄️ Plik archiwum: `{ARCHIVE_FILE}` ({len(archive_df)} zapisanych sygnałów)")
 
     df_plot = df.tail(95)
     long_s = df_plot[df_plot["Signal"] == 1]
@@ -767,23 +854,36 @@ with tab_main:
         fig.add_trace(go.Scatter(
             x=long_s.index, y=long_s["ArrowPrice"], mode="markers+text",
             marker=dict(symbol="triangle-up", size=18, color="#00e676", line=dict(color="white", width=1.2)),
-            text=["▲ LONG" for _ in range(len(long_s))], textposition="bottom center",
+            text=["▲ LONG (Zamknięta)" for _ in range(len(long_s))], textposition="bottom center",
             name="Sygnał LONG"
         ))
     if not short_s.empty:
         fig.add_trace(go.Scatter(
             x=short_s.index, y=short_s["ArrowPrice"], mode="markers+text",
             marker=dict(symbol="triangle-down", size=18, color="#ff1744", line=dict(color="white", width=1.2)),
-            text=["▼ SHORT" for _ in range(len(short_s))], textposition="top center",
+            text=["▼ SHORT (Zamknięta)" for _ in range(len(short_s))], textposition="top center",
             name="Sygnał SHORT"
         ))
 
-    if not eval_df.empty:
-        last_sig_row = eval_df.iloc[-1]
-        entry_lvl = float(last_sig_row["Wejście (ze spreadem)"])
-        sl_lvl = float(last_sig_row["Stop Loss"])
-        tp1_lvl = float(last_sig_row["Cel 1 (TP1)"])
-        tp2_lvl = float(last_sig_row["Cel Główny (TP2)"])
+    # Oznaczenie ostatniej rysującej się świecy na wykresie
+    fig.add_annotation(
+        x=live_candle_time,
+        y=float(live_candle["High"]),
+        text="⏳ Świeca w trakcie (Bot czeka)",
+        showarrow=True,
+        arrowhead=2,
+        ax=0,
+        ay=-30,
+        font=dict(color="#ffea00", size=11),
+        bgcolor="rgba(0,0,0,0.7)"
+    )
+
+    if not archive_df.empty:
+        last_sig_row = archive_df.iloc[-1]
+        entry_lvl = float(last_sig_row["wejscie"])
+        sl_lvl = float(last_sig_row["sl"])
+        tp1_lvl = float(last_sig_row["tp1"])
+        tp2_lvl = float(last_sig_row["tp2"])
         fig.add_hline(y=entry_lvl, line_dash="dash", line_color="#ffffff", annotation_text=f"Wejście: {entry_lvl:.2f}", annotation_position="right")
         fig.add_hline(y=sl_lvl, line_dash="dot", line_color="#ff1744", annotation_text=f"SL: {sl_lvl:.2f}", annotation_position="right")
         fig.add_hline(y=tp1_lvl, line_dash="dot", line_color="#00e676", annotation_text=f"TP1 (15 pkt): {tp1_lvl:.2f}", annotation_position="right")
@@ -792,13 +892,59 @@ with tab_main:
     fig.update_layout(height=540, template="plotly_dark", xaxis_rangeslider_visible=False, margin=dict(l=15, r=85, t=35, b=15))
     st.plotly_chart(fig, use_container_width=True)
 
-with tab_stats:
-    st.subheader("🏆 Uczciwa Tabela Wyników (Uwzględnia Spread i Cel 15 / 30 PKT)")
-    st.caption("Wejście liczone na otwarciu kolejnej świecy + połowa spreadu. Jeśli pozycja dojdzie do +15 pkt (TP1), zysk jest zabezpieczony!")
-    if not eval_df.empty:
-        st.dataframe(eval_df.iloc[::-1], use_container_width=True)
+with tab_archive:
+    st.subheader("🗄️ Trwałe Archiwum Wszystkich Sygnałów (Zapisywane na dysku PC w `archiwum_sygnalow_sp500.json`)")
+    st.markdown(
+        "**Jak czytać kolumnę czasu, żeby mieć 100% pewności, że bot nie obstawia w trakcie rysowania świecy?**\n"
+        "- **`Świeca sygnałowa`**: Godzina otwarcia świecy, na której powstała formacja (np. `09:40:00`). Ta świeca kończy się o `09:41:00`.\n"
+        "- **`Wejście (Nowa świeca)`**: Dokładny moment otwarcia **nowej świecy** (`09:41:00`), na której wchodzisz w pozycję po cenie `Cena Wejścia`.\n"
+        "- **`Tryb potwierdzenia`**: Zawsze `✅ Po zamknięciu świecy` — ostatnia rysująca się świeca jest całkowicie wyłączona z pętli sygnałowej."
+    )
+
+    a_col1, a_col2, a_col3, a_col4 = st.columns(4)
+    a_col1.metric("Wszystkie zapisane sygnały", len(archive_df))
+    a_col2.metric("Trafione (TP1 / TP2)", f"{wins}", delta=f"Skuteczność: {win_rate}%")
+    a_col3.metric("Stop Loss (SL)", f"{losses}")
+    a_col4.metric("Łączny wynik (PnL)", f"{total_pts:+.2f} pkt")
+
+    if not archive_df.empty:
+        display_cols = [
+            "swieca_sygnalu", "moment_wejscia", "potwierdzenie", "kierunek",
+            "formacja", "wejscie", "sl", "tp1", "tp2", "max_ruch_pkt",
+            "status", "pnl_pkt", "czas_rozliczenia"
+        ]
+        df_show = archive_df[display_cols].iloc[::-1].rename(columns={
+            "swieca_sygnalu": "Świeca sygnałowa",
+            "moment_wejscia": "Wejście (Nowa świeca)",
+            "potwierdzenie": "Tryb potwierdzenia",
+            "kierunek": "Kierunek",
+            "formacja": "Formacja",
+            "wejscie": "Cena Wejścia",
+            "sl": "Stop Loss",
+            "tp1": "Cel 1 (15 pkt)",
+            "tp2": "Cel 2 (30 pkt)",
+            "max_ruch_pkt": "Maks. ruch (pkt)",
+            "status": "Wynik / Status",
+            "pnl_pkt": "Punkty (PnL)",
+            "czas_rozliczenia": "Godz. rozliczenia"
+        })
+        st.dataframe(df_show, use_container_width=True)
+
+        b_col1, b_col2 = st.columns(2)
+        csv_bytes = df_show.to_csv(index=False).encode("utf-8-sig")
+        b_col1.download_button(
+            "📥 Pobierz Archiwum do Excela (CSV)",
+            data=csv_bytes,
+            file_name=f"archiwum_sp500_{now_pl.strftime('%Y%m%d_%H%M')}.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
+        if b_col2.button("🗑️ Wyczyść Trwałe Archiwum (Reset od zera)", use_container_width=True):
+            st.session_state["persistent_archive"] = []
+            save_persistent_archive([])
+            st.rerun()
     else:
-        st.info("Brak sygnałów na pobranych świecach.")
+        st.info("Archiwum jest jeszcze puste — poczekaj na pierwszy sygnał po zamknięciu świecy.")
 
 with tab_news:
     st.subheader("📡 Status kanałów informacyjnych RSS")
@@ -811,25 +957,25 @@ with tab_news:
             st.caption(f"📄 **Treść / Opis:** {art['description']}")
 
 st.markdown("---")
-st.subheader("🤖 Czat z Analitykiem AI (Widzi ostatnich 10 świec, pełne opisy newsów i falę 30 pkt)")
+st.subheader("🤖 Czat z Analitykiem AI (Widzi świece, trwałe archiwum i pełne artykuły)")
 
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
 q1, q2, q3 = st.columns(3)
 quick_p = None
-if q1.button("🔥 Czy szykuje się zjazd/wzrost o 30 punktów?", use_container_width=True):
-    quick_p = "Przeanalizuj ostatnie świece, średnie EMA9/21/50 oraz pełne opisy wiadomości. Czy jest szansa na ruch o 15-30 punktów i w którą stronę (SHORT czy LONG) koleżanka ma trzymać pozycję?"
+if q1.button("🔥 Oceń skuteczność bota z Archiwum i obecny kierunek", use_container_width=True):
+    quick_p = "Przeanalizuj wyniki z naszego trwałego archiwum sygnałów oraz ostatnie świece. Jak bot sobie radzi i w którą stronę (SHORT czy LONG) szukać teraz ruchu na 15-30 punktów?"
 if q2.button("📰 Podsumuj pełne artykuły (LONG czy SHORT?)", use_container_width=True):
     quick_p = "Przeczytaj dokładnie tytuły ORAZ pełne opisy artykułów makro/FED/BOJ/Tech. Która strona ma przewagę: SHORT czy LONG na S&P 500?"
-if q3.button("🛑 Gdzie ustawić bezpieczny Stop Loss?", use_container_width=True):
-    quick_p = "Chcemy potrzymać pozycję dłużej pod ruch 20-30 punktów. Gdzie ustawić Stop Loss, żeby zwykły szum nas nie wyrzucił?"
+if q3.button("🛑 Czy obecna świeca jest bezpieczna do wejścia?", use_container_width=True):
+    quick_p = "Sprawdź zamkniętą świecę, średnie EMA9/21/50 i ATR. Czy mamy potwierdzony sygnał po zamknięciu świecy, czy lepiej czekać?"
 
 for msg in st.session_state.chat_history:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-user_in = st.chat_input("Zadaj pytanie (np. 'trzymać tego shorta na 30 punktów czy zamykać?')...")
+user_in = st.chat_input("Zadaj pytanie (np. 'sprawdź archiwum — jak wchodzą shorty?')...")
 final_prompt = quick_p or user_in
 
 if final_prompt:
@@ -839,24 +985,23 @@ if final_prompt:
 
     candles_txt = df[["Open", "High", "Low", "Close", "EMA9", "EMA21", "EMA50", "RSI", "ATR", "Signal"]].tail(10).to_string()
     news_full_txt = "\n".join([f"- [{a['impact']}] {a['title']} -> Opis: {a['description']}" for a in articles[:8]])
-    recent_eval_txt = eval_df.tail(5).to_string() if not eval_df.empty else "Brak"
+    recent_arch_txt = archive_df.tail(8).to_string() if not archive_df.empty else "Brak"
 
     system_prompt = f"""
-    Jesteś głównym analitykiem S&P 500 (US500) pomagającym w handlu na ruchy 15–30 punktów (swing-scalping).
+    Jesteś głównym analitykiem S&P 500 (US500) pomagającym w handlu na ruchy 15–30 punktów.
     Aktualna cena: {current_price:.2f}, Spread: {current_spread} pkt, ATR: {current_atr:.2f}, RSI: {current_rsi:.1f}.
     Trend wyższego interwału ({htf_res}): {"WZROSTOWY" if htf_bias > 0 else ("SPADKOWY" if htf_bias < 0 else "PŁASKI")}.
-    Zjazd od ostatniego szczytu (60 świec): -{drop_from_high:.1f} pkt | Odbicie od dołka: +{rally_from_low:.1f} pkt.
-    Sentyment wiadomości: {news_sentiment_str}.
+    Statystyki z Trwałego Archiwum: {win_rate}% ({wins} wygranych, {losses} przegranych, {in_play} w grze, bilans: {total_pts:+.2f} pkt).
+    Ostatnie 8 sygnałów z Trwałego Archiwum:
+    {recent_arch_txt}
     Ostatnie 10 świec na wykresie:
     {candles_txt}
-    Ostatnie 5 sygnałów z tabeli wyników:
-    {recent_eval_txt}
     Pełne nagłówki ORAZ OPISY artykułów makro/rynkowych:
     {news_full_txt}
     Odpowiadaj konkretnie po polsku:
     1. Jednoznaczny kierunek (SHORT czy LONG lub CZEKAJ).
-    2. Czy jest paliwo na ruch 15-30 punktów (na bazie świec i pełnych opisów artykułów).
-    3. Konkretne poziomy: Wejście, Stop Loss, TP1 (15 pkt) i TP2 (30 pkt).
+    2. Ocena ostatnich sygnałów z archiwum i paliwa na ruch 15-30 punktów.
+    3. Konkretne poziomy: Wejście (po zamknięciu świecy), Stop Loss, TP1 (15 pkt) i TP2 (30 pkt).
     """
 
     with st.chat_message("assistant"):
@@ -874,10 +1019,10 @@ if final_prompt:
                 reply = f"Błąd OpenAI API: {e}"
         else:
             reply = (
-                f"**[Analiza Lokalna — Łowca Fal 30 PKT]**\n"
-                f"- **Sentyment z pełnych opisów wiadomości:** {news_sentiment_str}\n"
-                f"- **Ruch falowy (ostatnie 60 świec):** Zjazd od szczytu wynosi `-{drop_from_high:.1f} pkt`, a odbicie od dołka `+{rally_from_low:.1f} pkt`.\n"
-                f"- **Wskazówka:** *(Wpisz klucz OpenAI w panelu bocznym, aby odblokować pełną analizę AI).* "
+                f"**[Analiza Lokalna — Archiwum & Fala 30 PKT]**\n"
+                f"- **Bilans w Trwałym Archiwum:** `{win_rate}%` (`{wins}` trafionych / `{losses}` SL / `{in_play}` w grze, łącznie `{total_pts:+.2f} pkt`).\n"
+                f"- **Sentyment wiadomości:** {news_sentiment_str}\n"
+                f"- **Ruch falowy (60 świec):** Zjazd od szczytu `-{drop_from_high:.1f} pkt`, odbicie od dołka `+{rally_from_low:.1f} pkt`."
             )
         st.markdown(reply)
         st.session_state.chat_history.append({"role": "assistant", "content": reply})
